@@ -2,19 +2,21 @@ import pickle
 import pandas as pd
 import numpy as np
 
+
 def load_resources():
-    with open('model/laptop_price_model.pkl', 'rb') as f:
+    with open("model/laptop_price_model.pkl", "rb") as f:
         model = pickle.load(f)
-    with open('model/metadata.pkl', 'rb') as f:
+    with open("model/metadata.pkl", "rb") as f:
         metadata = pickle.load(f)
     return model, metadata
+
 
 def get_user_input(metadata):
     print("\n--- Laptop Price Prediction ---")
     print("Please enter the following details:")
-    
+
     inputs = {}
-    
+
     # Simple helper to handle choice inputs
     def get_choice(prompt, options):
         print(f"\n{prompt}")
@@ -25,7 +27,7 @@ def get_user_input(metadata):
             print("Common options:", ", ".join(sorted_options[:15]), "...")
         else:
             print("Options:", ", ".join(sorted_options))
-            
+
         while True:
             val = input("Enter value: ").strip()
             if val in options:
@@ -34,16 +36,16 @@ def get_user_input(metadata):
             matches = [opt for opt in options if val.lower() in str(opt).lower()]
             if len(matches) == 1:
                 confirm = input(f"Did you mean '{matches[0]}'? (y/n): ")
-                if confirm.lower() == 'y':
+                if confirm.lower() == "y":
                     return matches[0]
             print(f"Invalid input. Please choose from the available options.")
 
     # Categorical Inputs
-    for col in metadata['categorical_cols']:
-        inputs[col] = get_choice(f"Select {col}:", metadata['categories'][col])
-        
+    for col in metadata["categorical_cols"]:
+        inputs[col] = get_choice(f"Select {col}:", metadata["categories"][col])
+
     # Numerical Inputs
-    for col in metadata['numerical_cols']:
+    for col in metadata["numerical_cols"]:
         while True:
             try:
                 val = input(f"Enter {col} (numeric): ").strip()
@@ -51,8 +53,9 @@ def get_user_input(metadata):
                 break
             except ValueError:
                 print("Please enter a valid number.")
-                
+
     return pd.DataFrame([inputs])
+
 
 def main():
     try:
@@ -62,12 +65,13 @@ def main():
         return
 
     input_df = get_user_input(metadata)
-    
+
     prediction = model.predict(input_df)[0]
-    
-    print("\n" + "="*30)
+
+    print("\n" + "=" * 30)
     print(f"Predicted Price: ₹{prediction:,.2f}")
-    print("="*30 + "\n")
+    print("=" * 30 + "\n")
+
 
 if __name__ == "__main__":
     main()

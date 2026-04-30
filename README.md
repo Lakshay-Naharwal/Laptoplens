@@ -3,8 +3,9 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![XGBoost](https://img.shields.io/badge/Model-XGBoost-orange.svg)](https://xgboost.readthedocs.io/)
 [![Scikit-Learn](https://img.shields.io/badge/Library-Scikit--Learn-green.svg)](https://scikit-learn.org/)
+[![Flask](https://img.shields.io/badge/Web-Flask-black.svg)](https://flask.palletsprojects.com/)
 
-An end-to-end machine learning project designed to predict the market price of laptops based on their technical specifications. Utilizing the power of **XGBoost** and a robust **Scikit-Learn pipeline**, this tool provides accurate price estimations through a user-friendly command-line interface.
+An end-to-end machine learning project designed to predict the market price of laptops based on their technical specifications. Utilizing the power of **XGBoost** and a robust **Scikit-Learn pipeline**, this tool provides accurate price estimations through a beautiful, modern Web UI and a command-line interface.
 
 ---
 
@@ -12,8 +13,8 @@ An end-to-end machine learning project designed to predict the market price of l
 
 - **High Precision Modeling**: Built with `XGBRegressor` for state-of-the-art performance.
 - **Automated Pipeline**: Handles data preprocessing (Scaling, Ordinal Encoding) seamlessly.
-- **Interactive CLI**: Easy-to-use interface for real-time predictions.
-- **Smart Input Matching**: Loose-string matching for categorical inputs to minimize user errors.
+- **Beautiful Web UI**: Premium design with glassmorphism, responsive layouts, and smooth animations.
+- **Interactive CLI**: Easy-to-use command-line interface available for terminal enthusiasts.
 - **Comprehensive Specs**: Considers 13+ features including CPU, GPU, RAM, ROM, and Display quality.
 
 ## 🛠️ Technology Stack
@@ -21,15 +22,23 @@ An end-to-end machine learning project designed to predict the market price of l
 - **Core**: Python 3.8+
 - **Data Handling**: Pandas, NumPy
 - **Machine Learning**: Scikit-Learn, XGBoost
-- **Serialization**: Pickle (for model persistence)
+- **Backend UI**: Flask
+- **Frontend UI**: HTML5, Vanilla CSS3 (Glassmorphism), Vanilla JS
 
 ## 📁 Project Structure
 
 ```text
 laptop-price-prediction/
 ├── data.csv                # Raw dataset
+├── app.py                  # Flask Web UI server
 ├── main.py                 # CLI interface for predictions
 ├── train_model.py          # Model training & preprocessing script
+├── requirements.txt        # Project dependencies
+├── templates/              # HTML Templates for the UI
+│   └── index.html
+├── static/                 # CSS/JS for the UI
+│   ├── style.css
+│   └── script.js
 ├── model/                  # Saved artifacts
 │   ├── laptop_price_model.pkl
 │   └── metadata.pkl
@@ -38,10 +47,15 @@ laptop-price-prediction/
 
 ## ⚙️ Installation & Setup
 
-1. **Clone the repository**:
+We recommend using a Python Virtual Environment (`venv`) to run this project.
+
+1. **Create and activate a virtual environment**:
    ```bash
-   git clone https://github.com/yourusername/laptop-price-prediction.git
-   cd laptop-price-prediction
+   python -m venv venv
+   # Windows:
+   .\venv\Scripts\Activate.ps1
+   # Mac/Linux:
+   source venv/bin/activate
    ```
 
 2. **Install dependencies**:
@@ -57,18 +71,18 @@ laptop-price-prediction/
 
 ## 🖥️ Usage
 
-Run the prediction script and follow the interactive prompts:
+### 1. Web UI (Recommended)
+Run the Flask server to interact with the model via a beautiful web interface.
+```bash
+python app.py
+```
+Then, open your web browser and navigate to `http://127.0.0.1:5000`.
 
+### 2. Command Line Interface (CLI)
+Run the prediction script and follow the interactive prompts:
 ```bash
 python main.py
 ```
-
-### Example Input Flow:
-1. Select Brand (e.g., HP, Dell, Apple)
-2. Select Processor (e.g., Core i5, Ryzen 7)
-3. Enter RAM size (e.g., 16)
-4. Enter ROM size (e.g., 512)
-5. ... and other technical specs.
 
 ## 📊 Dataset Overview
 
