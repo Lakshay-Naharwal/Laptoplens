@@ -151,6 +151,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.hf-deploy-venv/
 env/
 venv/
 ENV/
