@@ -46,6 +46,43 @@ const USE_CASES = [
   { id: "General",     icon: "🌐", color: "from-slate-500 to-slate-400" },
 ];
 
+const getFilteredOptions = (col, options, useCase) => {
+  if (!useCase || useCase === "General" || !options) return options || [];
+
+  if (col === "GPU") {
+    const isDedicated = (o) => /rtx|gtx|rx |geforce|radeon pro/i.test(o);
+    const isApple = (o) => /m1|m2|m3|core gpu/i.test(o);
+    
+    if (useCase === "Office") {
+      // Exclude dedicated GPUs
+      return options.filter(o => !isDedicated(o));
+    }
+    if (useCase === "Gaming") {
+      // Only dedicated GPUs
+      return options.filter(o => isDedicated(o));
+    }
+    if (useCase === "Design") {
+      // Dedicated or Apple M-series
+      return options.filter(o => isDedicated(o) || isApple(o));
+    }
+  }
+
+  if (col === "processor") {
+    if (useCase === "Programming") {
+      // Exclude entry level
+      const isEntryLevel = (o) => /i3|ryzen 3|celeron|pentium|athlon/i.test(o);
+      return options.filter(o => !isEntryLevel(o));
+    }
+  }
+
+  return options;
+};
+
+const getMinVal = (col, useCase) => {
+  if (col === "Ram" && ["Gaming", "Design", "Programming"].includes(useCase)) return 16;
+  return 0; // default min
+};
+
 export default function SpecForm({ onPredict, isLoading }) {
   const [metadata, setMetadata]   = useState(null);
   const [metaError, setMetaError] = useState(null);
@@ -65,6 +102,39 @@ export default function SpecForm({ onPredict, isLoading }) {
         console.error(err);
       });
   }, []);
+
+  // ── Auto-correct selections on Use Case change ────────────────────────────
+  useEffect(() => {
+    if (!metadata) return;
+    setValues((prev) => {
+      let newVals = { ...prev };
+      let changed = false;
+
+      // Check categorical
+      metadata.categorical_cols.forEach((col) => {
+        if (prev[col]) {
+          const allowed = getFilteredOptions(col, metadata.categories[col], useCase);
+          if (!allowed.includes(prev[col])) {
+            newVals[col] = "";
+            changed = true;
+          }
+        }
+      });
+
+      // Check numerical min limits
+      metadata.numerical_cols.forEach((col) => {
+        if (prev[col]) {
+          const minReq = getMinVal(col, useCase);
+          if (Number(prev[col]) < minReq) {
+            newVals[col] = minReq.toString();
+            changed = true;
+          }
+        }
+      });
+
+      return changed ? newVals : prev;
+    });
+  }, [useCase, metadata]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleChange = (col, val) => setValues((prev) => ({ ...prev, [col]: val }));
@@ -138,7 +208,9 @@ export default function SpecForm({ onPredict, isLoading }) {
 
       {/* ── Categorical dropdowns ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {metadata.categorical_cols.map((col) => (
+        {metadata.categorical_cols.map((col) => {
+          const options = getFilteredOptions(col, metadata.categories[col], useCase);
+          return (
           <div key={col} className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
               {LABEL_MAP[col] || col}
@@ -159,7 +231,7 @@ export default function SpecForm({ onPredict, isLoading }) {
                 <option value="" disabled>
                   Select {LABEL_MAP[col] || col}
                 </option>
-                {(metadata.categories[col] || []).map((opt) => (
+                {options.map((opt) => (
                   <option key={opt} value={opt} className="bg-bg-surface">
                     {opt}
                   </option>
@@ -171,21 +243,24 @@ export default function SpecForm({ onPredict, isLoading }) {
               </span>
             </div>
           </div>
-        ))}
+        );
+        })}
       </div>
 
       {/* ── Numerical inputs ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {metadata.numerical_cols.filter(col => !HIDDEN_COLS.has(col)).map((col) => (
+        {metadata.numerical_cols.filter(col => !HIDDEN_COLS.has(col)).map((col) => {
+          const minReq = getMinVal(col, useCase);
+          return (
           <div key={col} className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-              {LABEL_MAP[col] || col}
+              {LABEL_MAP[col] || col} {minReq > 0 && <span className="text-accent-blue lowercase ml-1">(min {minReq})</span>}
             </label>
             <input
               id={col}
               type="number"
               step="any"
-              min="0"
+              min={minReq}
               value={values[col] || ""}
               onChange={(e) => handleChange(col, e.target.value)}
               placeholder={PLACEHOLDER_MAP[col] || "Enter value"}
@@ -199,7 +274,8 @@ export default function SpecForm({ onPredict, isLoading }) {
               "
             />
           </div>
-        ))}
+        );
+        })}
       </div>
 
       {/* ── Submit ────────────────────────────────────────────────────────── */}

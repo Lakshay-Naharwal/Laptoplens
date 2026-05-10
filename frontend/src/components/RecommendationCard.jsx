@@ -74,7 +74,7 @@ function LazyImage({ initialSrc, name }) {
   );
 }
 
-export default function RecommendationCard({ laptop, predictedPrice, onPriceHistory }) {
+export default function RecommendationCard({ laptop, predictedPrice }) {
   const {
     product_id, name, brand, cpu, gpu, ram, storage,
     display, price, seller, in_band, match_score, buy_url, image_url, price_delta,
@@ -140,28 +140,19 @@ export default function RecommendationCard({ laptop, predictedPrice, onPriceHist
           </div>
         </div>
 
-        <div className="flex items-end justify-between mt-auto pt-2 border-t border-white/5">
-          <div>
+        <div className="mt-auto pt-4 border-t border-white/5 space-y-3">
+          <div className="flex items-end justify-between">
             <p className="font-display font-bold text-xl text-white">₹{fmt(price)}</p>
-            <p className={`text-xs ${deltaClass}`}>{deltaText}</p>
+            <p className={`text-xs font-medium ${deltaClass}`}>{deltaText}</p>
           </div>
-          <div className="flex flex-col gap-2 items-end">
-            <a
-              href={buy_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs px-3 py-1.5 rounded-lg bg-accent-blue/10 border border-accent-blue/20 text-accent-blue hover:bg-accent-blue/20 transition-colors"
-            >
-              Buy →
-            </a>
-            <button
-              type="button"
-              onClick={() => onPriceHistory(product_id, name, price)}
-              className="text-xs px-3 py-1.5 rounded-lg bg-accent-purple/10 border border-accent-purple/20 text-accent-purple hover:bg-accent-purple/20 transition-colors"
-            >
-              📈 History
-            </button>
-          </div>
+          <a
+            href={(!buy_url || buy_url === "nan" || buy_url === "None" || String(buy_url).trim() === "") ? `https://www.flipkart.com/search?q=${encodeURIComponent(name)}` : buy_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-gradient w-full py-2.5 rounded-xl font-display font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-[1.02]"
+          >
+            🛒 Buy Now on Flipkart
+          </a>
         </div>
       </div>
     </div>

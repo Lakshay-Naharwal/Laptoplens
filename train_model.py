@@ -3,11 +3,16 @@ import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error
-from sklearn.preprocessing import OrdinalEncoder, StandardScaler
-from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
 import pickle
 import os
+import argparse
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,15 +20,24 @@ model_dir = os.path.join(script_dir, "model")
 os.makedirs(model_dir, exist_ok=True)
 
 # ─── 1. Load Data ─────────────────────────────────────────────────────────────
-# Prefer real scraped data if available, fall back to bundled CSV
 real_data_path = os.path.join(script_dir, "data_real.csv")
-default_data_path = os.path.join(script_dir, "data.csv")
-if os.path.exists(real_data_path):
-    data_path = real_data_path
-    print(f"✅ Using real scraped data: {real_data_path}")
-else:
-    data_path = default_data_path
-    print(f"ℹ️  Using bundled data: {default_data_path} (run scraper to get real data)")
+parser = argparse.ArgumentParser(description="Train the laptop price model")
+parser.add_argument(
+    "--data-source",
+    choices=["clean", "real"],
+    default=os.environ.get("TRAIN_DATA_SOURCE", "clean"),
+    help="Use curated data.csv by default; pass 'real' only for scraper experiments.",
+)
+args = parser.parse_args()
+
+# The scraped CSV is useful for recommendations, but its specs are parsed from
+# marketplace titles and are too noisy to be the default training source.
+clean_data_path = os.path.join(script_dir, "data.csv")
+data_path = real_data_path if args.data_source == "real" else clean_data_path
+if not os.path.exists(data_path):
+    raise FileNotFoundError(f"Training data not found: {data_path}")
+print(f"Training source: {args.data_source} ({data_path})")
+
 df = pd.read_csv(data_path)
 
 # ─── 2. Preprocessing ─────────────────────────────────────────────────────────
@@ -50,6 +64,9 @@ def clean_rom(val):
 
 df["Ram"] = df["Ram"].apply(extract_number)
 df["ROM"] = df["ROM"].apply(clean_rom)
+df["price"] = pd.to_numeric(df["price"], errors="coerce")
+df = df.dropna(subset=["price"])
+df = df[(df["price"] >= 10000) & (df["price"] <= 500000)]
 
 # ─── 3. Features & Target ─────────────────────────────────────────────────────
 categorical_cols = ["brand", "processor", "Ram_type", "ROM_type", "GPU", "OS"]
@@ -76,14 +93,14 @@ preprocessor = ColumnTransformer(
         ("num", StandardScaler(), numerical_cols),
         (
             "cat",
-            OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+            OneHotEncoder(handle_unknown="ignore", sparse_output=False),
             categorical_cols,
         ),
     ]
 )
 
 # ─── 5. Model Pipeline ────────────────────────────────────────────────────────
-model_pipeline = Pipeline(
+feature_pipeline = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
         (
@@ -99,6 +116,12 @@ model_pipeline = Pipeline(
             ),
         ),
     ]
+)
+
+model_pipeline = TransformedTargetRegressor(
+    regressor=feature_pipeline,
+    func=np.log1p,
+    inverse_func=np.expm1,
 )
 
 # ─── 6. Train / Test Split ────────────────────────────────────────────────────
@@ -118,9 +141,15 @@ print(f"R²  Score : {r2:.4f}")
 print(f"MAE (INR) : ₹{mae:,.2f}  ← used as default confidence band")
 
 # ─── 9. Feature Importance (for UI explanations) ──────────────────────────────
-feature_names = numerical_cols + categorical_cols
-importances = model_pipeline.named_steps["regressor"].feature_importances_
-feature_importance = dict(zip(feature_names, importances.tolist()))
+fitted_pipeline = model_pipeline.regressor_
+feature_names = fitted_pipeline.named_steps["preprocessor"].get_feature_names_out()
+feature_names = [name.split("__", 1)[-1] for name in feature_names]
+importances = fitted_pipeline.named_steps["regressor"].feature_importances_
+raw_importance = dict(zip(feature_names, importances.tolist()))
+feature_importance = {}
+for name, importance in raw_importance.items():
+    base_name = name.split("_", 1)[0] if "_" in name and name.split("_", 1)[0] in categorical_cols else name
+    feature_importance[base_name] = feature_importance.get(base_name, 0.0) + importance
 
 # ─── 10. Save Model ───────────────────────────────────────────────────────────
 model_path = os.path.join(model_dir, "laptop_price_model.pkl")
@@ -146,6 +175,8 @@ metadata = {
     "price_mean": float(df["price"].mean()),
     # Feature importance for explainability
     "feature_importance": feature_importance,
+    "training_data_source": args.data_source,
+    "training_rows": int(len(df)),
 }
 
 metadata_path = os.path.join(model_dir, "metadata.pkl")

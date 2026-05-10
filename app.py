@@ -39,8 +39,17 @@ app = Flask(
     static_folder=str(REACT_BUILD),
     static_url_path="",
 )
-# Allow requests from React dev server (localhost:5173) during development
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Allow local Vite during development; production can override with CORS_ORIGINS.
+cors_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+if cors_origins:
+    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 
 # ─── Load ML model + metadata ─────────────────────────────────────────────────
 MODEL_PATH    = BASE_DIR / "model" / "laptop_price_model.pkl"
@@ -87,6 +96,49 @@ USE_CASE_KEYWORDS = {
 }
 
 
+def _json_body() -> dict:
+    """Read a JSON request body without raising Flask parsing errors."""
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _as_float(value, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
+    """Parse a float with optional bounds, falling back to a safe default."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if min_value is not None:
+        parsed = max(min_value, parsed)
+    if max_value is not None:
+        parsed = min(max_value, parsed)
+    return parsed
+
+
+def _as_int(value, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
+    """Parse an int with optional bounds, falling back to a safe default."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if min_value is not None:
+        parsed = max(min_value, parsed)
+    if max_value is not None:
+        parsed = min(max_value, parsed)
+    return parsed
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    """Parse common JSON/form boolean values."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _recommend_from_real_data(
     predicted_price: float,
     confidence_band: float,
@@ -125,10 +177,29 @@ def _recommend_from_real_data(
         price_score = max(0, 40 - int(price_delta / 500))   # 0–40
 
         gpu_str  = str(row.get("GPU", "")).lower()
+        
+        # --- Strict Use Case Filtering ---
+        is_dedicated = any(k in gpu_str for k in ["rtx", "gtx", "rx ", "geforce", "radeon pro"])
+        is_apple = any(k in gpu_str for k in ["m1", "m2", "m3", "core gpu"])
+        is_basic_integrated = not is_dedicated and not is_apple
+
+        if use_case == "Office" and is_dedicated:
+            continue
+        if use_case == "Gaming" and not is_dedicated:
+            continue
+        if use_case == "Design" and is_basic_integrated:
+            continue
+        
+        cpu_str = str(row.get("processor", "")).lower()
+        is_entry_cpu = any(k in cpu_str for k in ["i3", "ryzen 3", "celeron", "pentium", "athlon"])
+        if use_case == "Programming" and is_entry_cpu:
+            continue
+        # ---------------------------------
+
         gpu_pref = user_specs.get("gpu_type", "integrated").lower()
-        if gpu_pref == "dedicated" and any(k in gpu_str for k in ["rtx","gtx","rx","mx"]):
+        if gpu_pref == "dedicated" and is_dedicated:
             gpu_score = 35
-        elif gpu_pref == "integrated" and any(k in gpu_str for k in ["iris","uhd","radeon","m2","m3"]):
+        elif gpu_pref == "integrated" and (is_basic_integrated or is_apple):
             gpu_score = 35
         else:
             gpu_score = 10
@@ -203,6 +274,8 @@ def api_metadata():
         "price_max":        metadata.get("price_max", 300000),
         "price_mean":       metadata.get("price_mean", 60000),
         "feature_importance": metadata.get("feature_importance", {}),
+        "training_data_source": metadata.get("training_data_source", "unknown"),
+        "training_rows":     metadata.get("training_rows"),
         "use_cases":        list(USE_CASE_KEYWORDS.keys()),
     })
 
@@ -232,7 +305,7 @@ def api_predict():
         return jsonify({"error": "Model not available"}), 503
 
     try:
-        data = request.get_json(force=True)
+        data = _json_body()
 
         # ── Build feature dict ──────────────────────────────────────────────
         inputs = {}
@@ -240,11 +313,7 @@ def api_predict():
             inputs[col] = str(data.get(col, ""))
 
         for col in metadata["numerical_cols"]:
-            val = data.get(col, "")
-            try:
-                inputs[col] = float(val) if val != "" else 0.0
-            except (ValueError, TypeError):
-                inputs[col] = 0.0
+            inputs[col] = _as_float(data.get(col), 0.0)
 
         input_df = pd.DataFrame([inputs])
 
@@ -257,7 +326,7 @@ def api_predict():
         # User may override the band; clamp between 1000 and 50000
         user_band = data.get("confidence_band")
         if user_band is not None:
-            confidence_band = max(1000.0, min(50000.0, float(user_band)))
+            confidence_band = _as_float(user_band, model_mae, 1000.0, 50000.0)
         else:
             confidence_band = model_mae
 
@@ -267,6 +336,7 @@ def api_predict():
             "price_max":       round(predicted + confidence_band, 2),
             "confidence_band": confidence_band,
             "mae":             model_mae,
+            "feature_importance": metadata.get("feature_importance", {}),
             "formatted":       f"₹{predicted:,.0f}",
             "formatted_range": f"₹{max(predicted-confidence_band,0):,.0f} – ₹{predicted+confidence_band:,.0f}",
         })
@@ -274,6 +344,27 @@ def api_predict():
     except Exception as e:
         logger.exception("Prediction error")
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/predict", methods=["POST"])
+def legacy_predict():
+    """Backward-compatible endpoint for the old Jinja frontend."""
+    result = api_predict()
+    if isinstance(result, tuple):
+        response, status = result
+    else:
+        response, status = result, result.status_code
+
+    if status >= 400:
+        return result
+
+    payload = response.get_json() or {}
+    return jsonify({
+        "success": True,
+        "prediction": payload.get("price"),
+        "formatted": payload.get("formatted"),
+        "formatted_range": payload.get("formatted_range"),
+    })
 
 
 @app.route("/api/recommend", methods=["POST"])
@@ -293,15 +384,15 @@ def api_recommend():
         { laptops: [...], source: "mock"|"live", cached: bool }
     """
     try:
-        data = request.get_json(force=True)
-        predicted_price  = float(data.get("predicted_price", 50000))
-        confidence_band  = float(data.get("confidence_band", 10000))
+        data = _json_body()
+        predicted_price  = _as_float(data.get("predicted_price"), 50000.0, 0.0)
+        confidence_band  = _as_float(data.get("confidence_band"), 10000.0, 1000.0, 50000.0)
         use_case         = data.get("use_case", "")
-        use_live         = bool(data.get("use_live", False))
+        use_live         = _as_bool(data.get("use_live"), False)
 
         user_specs = {
             "use_case":   use_case,
-            "ram":        float(data.get("ram", 0)),
+            "ram":        _as_float(data.get("ram"), 0.0, 0.0),
             "gpu_type":   data.get("gpu_type", "integrated"),
         }
 
@@ -351,30 +442,6 @@ def api_recommend():
             )
             source = "mock"
 
-        # ── Persist products + seed initial price history ────────────────────
-        for laptop in laptops:
-            upsert_product(
-                product_id=laptop["product_id"],
-                name=laptop["name"],
-                image_url=laptop.get("image_url", ""),
-                buy_url=laptop.get("buy_url", ""),
-                source=laptop.get("source", source),
-                specs={k: v for k, v in laptop.items()
-                       if k not in ("product_id", "image_url", "buy_url", "source")},
-            )
-            # Seed price history with mock data for products that have none
-            history = get_price_history(laptop["product_id"], days=365)
-            if not history:
-                mock_history = generate_mock_price_history(
-                    laptop["product_id"], laptop["price"], days=90
-                )
-                for point in mock_history:
-                    insert_price(
-                        laptop["product_id"],
-                        laptop["name"],
-                        source,
-                        point["price"],
-                    )
 
         # ── Soft-sort: closest to predicted price first; in-band laptops float up ────────
         for laptop in laptops:
@@ -438,7 +505,7 @@ def api_price_history():
         }
     """
     product_id = request.args.get("product_id")
-    days       = int(request.args.get("days", 30))
+    days       = _as_int(request.args.get("days"), 30, 1, 365)
 
     if not product_id:
         return jsonify({"error": "product_id is required"}), 400
@@ -447,9 +514,11 @@ def api_price_history():
     stats   = get_price_stats(product_id, days=days)
 
     # If no real DB history, generate mock on-the-fly for the demo
+    source = "db"
     if not history:
         current = stats.get("current_price", 50000)
         history = generate_mock_price_history(product_id, current, days=days)
+        source = "mock"
         stats   = {
             "min_price":     min(h["price"] for h in history),
             "max_price":     max(h["price"] for h in history),
@@ -464,6 +533,7 @@ def api_price_history():
         "history":          history,
         "stats":            stats,
         "tracking_started": len(history) < 3,
+        "source":           source,
     })
 
 
@@ -479,12 +549,17 @@ def api_track_price():
         price:        float
     """
     try:
-        data = request.get_json(force=True)
+        data = _json_body()
+        if not data.get("product_id") or not data.get("product_name"):
+            return jsonify({"error": "product_id and product_name are required"}), 400
+        price = _as_float(data.get("price"), 0.0, 0.0)
+        if price <= 0:
+            return jsonify({"error": "price must be greater than 0"}), 400
         insert_price(
             product_id=data["product_id"],
             product_name=data["product_name"],
             source=data.get("source", "manual"),
-            price=float(data["price"]),
+            price=price,
         )
         return jsonify({"success": True})
     except Exception as e:

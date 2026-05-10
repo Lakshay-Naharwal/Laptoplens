@@ -33,7 +33,7 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db() -> None:
     """Create tables if they don't exist. Called once at app startup."""
-    schema = _SCHEMA_PATH.read_text()
+    schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection() as conn:
         conn.executescript(schema)
     print(f"[DB] Initialised at {DB_PATH}")

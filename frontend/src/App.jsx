@@ -19,7 +19,6 @@ import { useState, useRef } from "react";
 import SpecForm            from "./components/SpecForm";
 import PredictionResult    from "./components/PredictionResult";
 import RecommendationCard  from "./components/RecommendationCard";
-import PriceHistoryChart   from "./components/PriceHistoryChart";
 import { CardSkeleton, ResultSkeleton } from "./components/SkeletonLoader";
 import { predictPrice, fetchRecommendations } from "./api/client";
 
@@ -27,7 +26,6 @@ export default function App() {
   // ── State ────────────────────────────────────────────────────────────────
   const [predResult,   setPredResult]   = useState(null);
   const [laptops,      setLaptops]      = useState([]);
-  const [historyTarget, setHistoryTarget] = useState(null);
   const [recSummary,   setRecSummary]   = useState(null); // { in_band_count, total_count, tolerance }
 
   const [loadingPred,  setLoadingPred]  = useState(false);
@@ -53,7 +51,6 @@ export default function App() {
     setPredError(null);
     setPredResult(null);
     setLaptops([]);
-    setHistoryTarget(null);
 
     try {
       const result = await predictPrice(formData);
@@ -73,7 +70,6 @@ export default function App() {
     if (!predResult) return;
     setLoadingRecs(true);
     setLaptops([]);
-    setHistoryTarget(null);
     setRecSummary(null);
 
     const { price, _formData } = predResult;
@@ -83,9 +79,9 @@ export default function App() {
         confidence_band:  tolerance,
         use_case:         _formData.use_case ?? "",
         ram:              _formData.Ram ?? 0,
-        gpu_type:         _formData.GPU?.toLowerCase().includes("rtx") ||
-                          _formData.GPU?.toLowerCase().includes("gtx") ||
-                          _formData.GPU?.toLowerCase().includes("mx")
+        gpu_type:         (_formData.GPU || "").toLowerCase().includes("rtx") ||
+                          (_formData.GPU || "").toLowerCase().includes("gtx") ||
+                          (_formData.GPU || "").toLowerCase().includes("mx")
                             ? "dedicated" : "integrated",
         use_live:         false,
       });
@@ -102,16 +98,6 @@ export default function App() {
     } finally {
       setLoadingRecs(false);
     }
-  };
-
-  /** Opens the price history chart panel for a product. */
-  const handlePriceHistory = (productId, name, price) => {
-    setHistoryTarget({ productId, name, price });
-    setTimeout(() => {
-      document.getElementById("price-history-panel")?.scrollIntoView({
-        behavior: "smooth", block: "start",
-      });
-    }, 100);
   };
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -219,23 +205,10 @@ export default function App() {
                       key={laptop.product_id}
                       laptop={laptop}
                       predictedPrice={predResult?.price ?? 0}
-                      onPriceHistory={handlePriceHistory}
                     />
                   ))
               }
             </div>
-          </section>
-        )}
-
-        {/* ── Price history chart panel ──────────────────────────────────── */}
-        {historyTarget && (
-          <section id="price-history-panel" className="animate-slide-up">
-            <PriceHistoryChart
-              productId={historyTarget.productId}
-              productName={historyTarget.name}
-              currentPrice={historyTarget.price}
-              onClose={() => setHistoryTarget(null)}
-            />
           </section>
         )}
 

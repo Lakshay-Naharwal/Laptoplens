@@ -1,9 +1,8 @@
 services:
   - type: web
     name: laptop-price-prediction
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    env: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.0
+      - key: CORS_ORIGINS
+        value: ""

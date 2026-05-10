@@ -56,6 +56,8 @@ python app.py
 # → http://localhost:5000
 ```
 
+By default, `train_model.py` uses the curated `data.csv`. Scraped `data_real.csv` is kept for recommendations because marketplace-title parsing can be noisy. To experiment with scraped training data, run `python train_model.py --data-source real`.
+
 ### Frontend (React)
 
 ```bash
@@ -81,6 +83,12 @@ docker build -t laptoplens .
 docker run -p 7860:7860 laptoplens
 # → http://localhost:7860
 ```
+
+## Deployment Notes
+
+- `render.yaml` uses the Dockerfile so the React build and Flask backend are built together.
+- Runtime files such as `price_history.db*`, `frontend/dist/`, and `scraper/image_cache.json` are generated locally and ignored by Git.
+- Set `CORS_ORIGINS` only when the API must be called from a separate frontend origin. Same-origin production deployments do not need it.
 
 ## Deploy to Hugging Face Spaces
 
