@@ -1,90 +1,533 @@
-from flask import Flask, render_template, request, jsonify
-import pickle
-import pandas as pd
+"""
+app.py  —  Laptop Price Intelligence API
+Flask backend serving the React frontend and all REST endpoints.
+
+Endpoints:
+  GET  /                    → serve React build (index.html)
+  GET  /api/metadata        → form options + model stats
+  POST /api/predict         → ML price prediction + confidence band
+  POST /api/recommend       → mock/live laptop recommendations
+  GET  /api/price-history   → time-series price data for a product
+  POST /api/track-price     → append a price snapshot to DB
+"""
+
 import os
+import json
+import pickle
+import asyncio
+import logging
+from pathlib import Path
 
-app = Flask(__name__)
+import pandas as pd
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 
-# Load model and metadata
-script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(script_dir, "model", "laptop_price_model.pkl")
-metadata_path = os.path.join(script_dir, "model", "metadata.pkl")
+from database.db import init_db, upsert_product, insert_price, get_price_history, get_price_stats
+from scraper.cache import scrape_cache
+from scraper.mock_data import generate_mock_listings, generate_mock_price_history
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# ─── App setup ────────────────────────────────────────────────────────────────
+BASE_DIR    = Path(__file__).parent
+REACT_BUILD = BASE_DIR / "frontend" / "dist"   # React production build output
+
+app = Flask(
+    __name__,
+    static_folder=str(REACT_BUILD),
+    static_url_path="",
+)
+# Allow requests from React dev server (localhost:5173) during development
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# ─── Load ML model + metadata ─────────────────────────────────────────────────
+MODEL_PATH    = BASE_DIR / "model" / "laptop_price_model.pkl"
+METADATA_PATH = BASE_DIR / "model" / "metadata.pkl"
 
 try:
-    with open(model_path, "rb") as f:
+    with open(MODEL_PATH, "rb") as f:
         model = pickle.load(f)
-    with open(metadata_path, "rb") as f:
+    with open(METADATA_PATH, "rb") as f:
         metadata = pickle.load(f)
+    logger.info(f"Model loaded. MAE = ₹{metadata.get('mae', '?'):,}")
 except Exception as e:
-    print(f"Error loading model/metadata: {e}")
+    logger.error(f"Failed to load model: {e}")
     model = None
     metadata = None
 
+# ─── Initialise database ──────────────────────────────────────────────────────
+init_db()
 
-@app.route("/")
-def index():
+# ─── Load real scraped data for recommendation engine ─────────────────────────
+REAL_DATA_PATH  = BASE_DIR / "data_real.csv"
+_real_laptops: list[dict] = []
+
+try:
+    if REAL_DATA_PATH.exists():
+        df_real = pd.read_csv(REAL_DATA_PATH)
+        for _, row in df_real.iterrows():
+            entry = row.to_dict()
+            if pd.notna(entry.get("price")) and float(entry["price"]) > 0:
+                _real_laptops.append(entry)
+        logger.info(f"Loaded {len(_real_laptops)} real scraped laptops for recommendations")
+    else:
+        logger.info("data_real.csv not found — using mock data for recommendations")
+except Exception as e:
+    logger.warning(f"Could not load data_real.csv: {e}")
+
+# ─── Use-case → keyword mapping (for recommendation filtering) ────────────────
+USE_CASE_KEYWORDS = {
+    "Gaming":      ["gaming", "rog", "omen", "predator", "legion", "alienware", "rtx", "gtx"],
+    "Office":      ["business", "thinkpad", "latitude", "elitebook", "vivobook", "slim"],
+    "Design":      ["creator", "spectre", "zenbook", "xps", "macbook", "studio"],
+    "Programming": ["developer", "thinkpad", "xps", "macbook", "zenbook", "spectre"],
+    "General":     [],   # no filter — all laptops qualify
+}
+
+
+def _recommend_from_real_data(
+    predicted_price: float,
+    confidence_band: float,
+    user_specs: dict,
+    use_case: str,
+    count: int = 12,
+) -> list[dict]:
+    """
+    Pull laptop recommendations directly from data_real.csv.
+    image_url and buy_url come from the scraper — guaranteed to match each laptop.
+    Returns empty list if no real data is loaded.
+    """
+    import hashlib
+
+    if not _real_laptops:
+        return []
+
+    use_case_kws = USE_CASE_KEYWORDS.get(use_case, [])
+
+    candidates = []
+    for row in _real_laptops:
+        price = float(row.get("price", 0))
+        if price <= 0:
+            continue
+
+        name  = str(row.get("name", ""))
+        lower = name.lower()
+
+        # Use-case keyword filter (skip only if use_case set AND no keyword matches)
+        if use_case and use_case_kws and use_case != "General":
+            if not any(kw in lower for kw in use_case_kws):
+                continue
+
+        # Match score (simplified — price proximity + GPU type)
+        price_delta = abs(price - predicted_price)
+        price_score = max(0, 40 - int(price_delta / 500))   # 0–40
+
+        gpu_str  = str(row.get("GPU", "")).lower()
+        gpu_pref = user_specs.get("gpu_type", "integrated").lower()
+        if gpu_pref == "dedicated" and any(k in gpu_str for k in ["rtx","gtx","rx","mx"]):
+            gpu_score = 35
+        elif gpu_pref == "integrated" and any(k in gpu_str for k in ["iris","uhd","radeon","m2","m3"]):
+            gpu_score = 35
+        else:
+            gpu_score = 10
+
+        ram_val   = float(row.get("Ram", 0))
+        user_ram  = float(user_specs.get("ram", 0))
+        ram_score = 25 if (user_ram and ram_val >= user_ram) else (12 if ram_val >= user_ram // 2 else 0)
+
+        match_score = min(price_score + gpu_score + ram_score, 100)
+
+        pid = hashlib.md5(name.lower().encode()).hexdigest()[:12]
+        candidates.append({
+            "product_id":  pid,
+            "name":        name,
+            "brand":       str(row.get("brand", "")),
+            "cpu":         str(row.get("processor", "")),
+            "gpu":         str(row.get("GPU", "")),
+            "ram":         f"{int(float(row.get('Ram', 8)))}GB {row.get('Ram_type','DDR4')}",
+            "storage":     f"{int(float(row.get('ROM', 512)))}GB {row.get('ROM_type','SSD')}",
+            "display":     f"{row.get('display_size', 15.6)}\" FHD",
+            "price":       price,
+            "seller":      str(row.get("source", "scraped")).title(),
+            "source":      str(row.get("source", "scraped")),
+            "buy_url":     str(row.get("buy_url", "") or ""),
+            "image_url":   str(row.get("image_url", "") or ""),  # ← from same card
+            "in_band":     price_delta <= confidence_band,
+            "price_delta": round(price - predicted_price, 2),
+            "match_score": match_score,
+            "use_cases":   [use_case] if use_case else [],
+        })
+
+    if not candidates:
+        return []
+
+    # Soft sort: in-range first, then by score desc, then by price proximity
+    candidates.sort(key=lambda x: (not x["in_band"], -x["match_score"], abs(x["price_delta"])))
+    return candidates[:count]
+
+
+# ─── Helper: run async scraper from sync Flask context ────────────────────────
+def run_async(coro):
+    """Execute an async coroutine from a synchronous Flask route."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, coro)
+                return future.result()
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   API ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/metadata")
+def api_metadata():
+    """Return form dropdown options and model performance stats."""
     if not metadata:
-        return (
-            "Model and metadata not found. Please train the model first by running train_model.py.",
-            500,
-        )
+        return jsonify({"error": "Model not loaded. Run train_model.py first."}), 503
 
-    # Sort categories for better UI experience
-    sorted_categories = {}
-    for col, cats in metadata["categories"].items():
-        # Handle nan values by converting to string or filtering
-        clean_cats = [str(c) for c in cats if str(c).lower() != "nan"]
-        sorted_categories[col] = sorted(clean_cats)
+    return jsonify({
+        "categorical_cols": metadata["categorical_cols"],
+        "numerical_cols":   metadata["numerical_cols"],
+        "categories":       metadata["categories"],
+        "mae":              metadata.get("mae", 5000),
+        "r2":               metadata.get("r2", 0),
+        "price_min":        metadata.get("price_min", 15000),
+        "price_max":        metadata.get("price_max", 300000),
+        "price_mean":       metadata.get("price_mean", 60000),
+        "feature_importance": metadata.get("feature_importance", {}),
+        "use_cases":        list(USE_CASE_KEYWORDS.keys()),
+    })
 
-    return render_template(
-        "index.html", metadata=metadata, sorted_categories=sorted_categories
-    )
 
+@app.route("/api/predict", methods=["POST"])
+def api_predict():
+    """
+    Predict laptop price from user specs.
 
-@app.route("/predict", methods=["POST"])
-def predict():
+    Body (JSON):
+        All categorical and numerical feature values from the model metadata,
+        plus optional:
+          - confidence_band (int): user-set ±INR tolerance (default: model MAE)
+          - use_case (str): selected use-case tag
+
+    Response:
+        {
+          price:            float,   # predicted INR
+          price_min:        float,   # price - band
+          price_max:        float,   # price + band
+          confidence_band:  float,   # actual band used
+          mae:              float,   # model MAE for reference
+          formatted:        str,     # "₹XX,XXX"
+        }
+    """
     if not model or not metadata:
-        return jsonify({"error": "Model not loaded"}), 500
+        return jsonify({"error": "Model not available"}), 503
 
     try:
-        data = request.json
+        data = request.get_json(force=True)
+
+        # ── Build feature dict ──────────────────────────────────────────────
         inputs = {}
-
-        # Process categorical inputs
         for col in metadata["categorical_cols"]:
-            inputs[col] = data.get(col, "")
+            inputs[col] = str(data.get(col, ""))
 
-        # Process numerical inputs
         for col in metadata["numerical_cols"]:
             val = data.get(col, "")
             try:
                 inputs[col] = float(val) if val != "" else 0.0
-            except ValueError:
+            except (ValueError, TypeError):
                 inputs[col] = 0.0
 
         input_df = pd.DataFrame([inputs])
 
-        # Get prediction
-        prediction = model.predict(input_df)[0]
-        prediction_val = float(prediction)
+        # ── Predict ─────────────────────────────────────────────────────────
+        raw_pred = float(model.predict(input_df)[0])
+        predicted = max(raw_pred, 0.0)
 
-        # Ensure prediction is non-negative
-        if prediction_val < 0:
-            prediction_val = 0.0
+        # ── Confidence band ─────────────────────────────────────────────────
+        model_mae = metadata.get("mae", 5000)
+        # User may override the band; clamp between 1000 and 50000
+        user_band = data.get("confidence_band")
+        if user_band is not None:
+            confidence_band = max(1000.0, min(50000.0, float(user_band)))
+        else:
+            confidence_band = model_mae
 
-        return jsonify(
-            {
-                "success": True,
-                "prediction": prediction_val,
-                "formatted_prediction": f"₹{prediction_val:,.2f}",
-            }
-        )
+        return jsonify({
+            "price":           round(predicted, 2),
+            "price_min":       round(max(predicted - confidence_band, 0), 2),
+            "price_max":       round(predicted + confidence_band, 2),
+            "confidence_band": confidence_band,
+            "mae":             model_mae,
+            "formatted":       f"₹{predicted:,.0f}",
+            "formatted_range": f"₹{max(predicted-confidence_band,0):,.0f} – ₹{predicted+confidence_band:,.0f}",
+        })
+
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
+        logger.exception("Prediction error")
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/recommend", methods=["POST"])
+def api_recommend():
+    """
+    Return laptop recommendations matching user specs and predicted price band.
+
+    Body (JSON):
+        predicted_price:  float
+        confidence_band:  float
+        use_case:         str   (optional filter tag)
+        ram:              float (for match scoring)
+        gpu_type:         str   "integrated" | "dedicated"
+        use_live:         bool  (default: false) — set true to trigger Playwright
+
+    Response:
+        { laptops: [...], source: "mock"|"live", cached: bool }
+    """
+    try:
+        data = request.get_json(force=True)
+        predicted_price  = float(data.get("predicted_price", 50000))
+        confidence_band  = float(data.get("confidence_band", 10000))
+        use_case         = data.get("use_case", "")
+        use_live         = bool(data.get("use_live", False))
+
+        user_specs = {
+            "use_case":   use_case,
+            "ram":        float(data.get("ram", 0)),
+            "gpu_type":   data.get("gpu_type", "integrated"),
+        }
+
+        # ── Cache key ───────────────────────────────────────────────────────
+        cache_key = f"recommend::{int(predicted_price)}::{int(confidence_band)}::{use_case}"
+        cached    = scrape_cache.get(cache_key)
+        if cached:
+            return jsonify({**cached, "cached": True})
+
+        # ── Live scraper (optional) ──────────────────────────────────────────
+        laptops = []
+        source  = "mock"
+
+        if use_live:
+            try:
+                from scraper.flipkart_scraper import scrape_flipkart
+                query   = _build_search_query(user_specs, use_case)
+                laptops = run_async(scrape_flipkart(
+                    query,
+                    max_results=12,
+                    predicted_price=predicted_price,
+                    confidence_band=confidence_band,
+                ))
+                source = "live"
+            except Exception as e:
+                logger.warning(f"Live scraper failed, falling back to mock: {e}")
+
+        # ── Real scraped data (primary source) ──────────────────────────────
+        if not laptops and _real_laptops:
+            laptops = _recommend_from_real_data(
+                predicted_price=predicted_price,
+                confidence_band=confidence_band,
+                user_specs=user_specs,
+                use_case=use_case,
+                count=12,
+            )
+            if laptops:
+                source = "real"
+
+        # ── Mock fallback (when no real data available) ──────────────────────
+        if not laptops:
+            laptops = generate_mock_listings(
+                predicted_price=predicted_price,
+                confidence_band=confidence_band,
+                user_specs=user_specs,
+                count=12,
+            )
+            source = "mock"
+
+        # ── Persist products + seed initial price history ────────────────────
+        for laptop in laptops:
+            upsert_product(
+                product_id=laptop["product_id"],
+                name=laptop["name"],
+                image_url=laptop.get("image_url", ""),
+                buy_url=laptop.get("buy_url", ""),
+                source=laptop.get("source", source),
+                specs={k: v for k, v in laptop.items()
+                       if k not in ("product_id", "image_url", "buy_url", "source")},
+            )
+            # Seed price history with mock data for products that have none
+            history = get_price_history(laptop["product_id"], days=365)
+            if not history:
+                mock_history = generate_mock_price_history(
+                    laptop["product_id"], laptop["price"], days=90
+                )
+                for point in mock_history:
+                    insert_price(
+                        laptop["product_id"],
+                        laptop["name"],
+                        source,
+                        point["price"],
+                    )
+
+        # ── Soft-sort: closest to predicted price first; in-band laptops float up ────────
+        for laptop in laptops:
+            laptop["price_delta"] = round(laptop["price"] - predicted_price, 2)
+            laptop["in_band"]     = abs(laptop["price"] - predicted_price) <= confidence_band
+        laptops.sort(key=lambda x: (not x["in_band"], abs(x["price_delta"])))
+
+        in_band_count = sum(1 for l in laptops if l["in_band"])
+        result = {
+            "laptops":       laptops,
+            "source":        source,
+            "in_band_count": in_band_count,
+            "total_count":   len(laptops),
+        }
+        # Cache for 3 hours
+        scrape_cache.set(cache_key, result)
+
+        return jsonify({**result, "cached": False})
+
+    except Exception as e:
+        logger.exception("Recommendation error")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/laptop-image")
+def api_laptop_image():
+    """
+    Lazy image loader. Returns a real product image URL for a given laptop name.
+    Results are cached in scraper/image_cache.json so Selenium only runs once.
+
+    Query params:
+        name: str   Laptop name, e.g. "ASUS ROG Strix G15"
+    """
+    name = request.args.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    try:
+        from scraper.image_fetcher import get_image
+        url = get_image(name)
+        return jsonify({"image_url": url, "name": name})
+    except Exception as e:
+        logger.warning(f"Image fetch failed for '{name}': {e}")
+        return jsonify({"image_url": "", "name": name})
+
+
+@app.route("/api/price-history")
+def api_price_history():
+    """
+    Fetch price history for a product over a given timeframe.
+
+    Query params:
+        product_id: str
+        days:       int  (default: 30)
+
+    Response:
+        {
+          product_id: str,
+          history:    [{price, scraped_at}, ...],
+          stats:      {min_price, max_price, avg_price, current_price, data_points},
+          tracking_started: bool   (true if history just started — <3 data points)
+        }
+    """
+    product_id = request.args.get("product_id")
+    days       = int(request.args.get("days", 30))
+
+    if not product_id:
+        return jsonify({"error": "product_id is required"}), 400
+
+    history = get_price_history(product_id, days=days)
+    stats   = get_price_stats(product_id, days=days)
+
+    # If no real DB history, generate mock on-the-fly for the demo
+    if not history:
+        current = stats.get("current_price", 50000)
+        history = generate_mock_price_history(product_id, current, days=days)
+        stats   = {
+            "min_price":     min(h["price"] for h in history),
+            "max_price":     max(h["price"] for h in history),
+            "avg_price":     round(sum(h["price"] for h in history) / len(history), 2),
+            "current_price": history[-1]["price"],
+            "data_points":   len(history),
+        }
+
+    return jsonify({
+        "product_id":       product_id,
+        "days":             days,
+        "history":          history,
+        "stats":            stats,
+        "tracking_started": len(history) < 3,
+    })
+
+
+@app.route("/api/track-price", methods=["POST"])
+def api_track_price():
+    """
+    Manually append a price snapshot (e.g., called after a fresh scrape).
+
+    Body (JSON):
+        product_id:   str
+        product_name: str
+        source:       str
+        price:        float
+    """
+    try:
+        data = request.get_json(force=True)
+        insert_price(
+            product_id=data["product_id"],
+            product_name=data["product_name"],
+            source=data.get("source", "manual"),
+            price=float(data["price"]),
+        )
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# ─── Serve React SPA ──────────────────────────────────────────────────────────
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_react(path):
+    """
+    Serve the React build for all non-API routes.
+    Falls back to index.html for client-side routing.
+    """
+    if REACT_BUILD.exists():
+        target = REACT_BUILD / path
+        if path and target.exists():
+            return send_from_directory(str(REACT_BUILD), path)
+        return send_from_directory(str(REACT_BUILD), "index.html")
+    # Dev mode: no build yet
+    return jsonify({"message": "React build not found. Run: cd frontend && npm run build"}), 404
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _build_search_query(user_specs: dict, use_case: str) -> str:
+    """Build a Flipkart search query string from user specs."""
+    parts = ["laptop"]
+    ram = user_specs.get("ram")
+    if ram:
+        parts.append(f"{int(ram)}GB RAM")
+    gpu_type = user_specs.get("gpu_type", "")
+    if gpu_type == "dedicated":
+        parts.append("dedicated graphics")
+    if use_case in ("Gaming",):
+        parts.append("gaming")
+    return " ".join(parts)
+
+
+# ─── Entrypoint ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_ENV", "production") == "development"
+    app.run(host="0.0.0.0", port=port, debug=debug)

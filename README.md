@@ -1,110 +1,131 @@
 ---
-title: Laptop Price Predictor
-emoji: 💻
+title: LaptopLens — AI Price Intelligence
+emoji: 🔍
 colorFrom: blue
-colorTo: indigo
+colorTo: purple
 sdk: docker
-pinned: false
+port: 7860
+app_port: 7860
+pinned: true
 ---
 
-# 💻 Laptop Price Predictor
+# 🔍 LaptopLens — AI Laptop Price Intelligence
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![XGBoost](https://img.shields.io/badge/Model-XGBoost-orange.svg)](https://xgboost.readthedocs.io/)
-[![Scikit-Learn](https://img.shields.io/badge/Library-Scikit--Learn-green.svg)](https://scikit-learn.org/)
-[![Flask](https://img.shields.io/badge/Web-Flask-black.svg)](https://flask.palletsprojects.com/)
+> Know the fair price **before** you buy.
 
-An end-to-end machine learning project designed to predict the market price of laptops based on their technical specifications. Utilizing the power of **XGBoost** and a robust **Scikit-Learn pipeline**, this tool provides accurate price estimations through a beautiful, modern Web UI and a command-line interface.
+An AI-powered platform that predicts a fair laptop price, finds matching real-time listings, and tracks price history across Indian e-commerce platforms.
 
----
+## Features
 
-## 🚀 Features
+| Feature | Description |
+|---|---|
+| 🤖 **AI Price Prediction** | XGBoost model trained on 900+ laptops, predicts ±MAE accuracy |
+| 🎚️ **Adjustable Tolerance** | You control the ±₹ confidence band (tight/flexible) |
+| 📦 **Recommendation Cards** | Matching laptops with spec match scores |
+| 📈 **Price History Chart** | Line chart with 7D/1M/3M/6M/1Y timeframes |
+| 🏷️ **Use-Case Filter** | Gaming / Office / Design / Programming / General |
+| 📝 **Mock → Live** | Demo works offline; live Flipkart scraper is optional |
 
-- **High Precision Modeling**: Built with `XGBRegressor` for state-of-the-art performance.
-- **Automated Pipeline**: Handles data preprocessing (Scaling, Ordinal Encoding) seamlessly.
-- **Beautiful Web UI**: Premium design with glassmorphism, responsive layouts, and smooth animations.
-- **Interactive CLI**: Easy-to-use command-line interface available for terminal enthusiasts.
-- **Comprehensive Specs**: Considers 13+ features including CPU, GPU, RAM, ROM, and Display quality.
+## Tech Stack
 
-## 🛠️ Technology Stack
+- **Frontend**: React 18 + Vite + Tailwind CSS
+- **Backend**: Flask 3 + Gunicorn
+- **ML Model**: XGBoost + scikit-learn Pipeline
+- **Database**: SQLite (price history, append-only)
+- **Scraping**: Playwright (optional) + mock data fallback
+- **Deployment**: Hugging Face Spaces (Docker)
 
-- **Core**: Python 3.8+
-- **Data Handling**: Pandas, NumPy
-- **Machine Learning**: Scikit-Learn, XGBoost
-- **Backend UI**: Flask
-- **Frontend UI**: HTML5, Vanilla CSS3 (Glassmorphism), Vanilla JS
+## Local Development
 
-## 📁 Project Structure
+### Backend (Flask)
 
-```text
-laptop-price-prediction/
-├── data.csv                # Raw dataset
-├── app.py                  # Flask Web UI server
-├── main.py                 # CLI interface for predictions
-├── train_model.py          # Model training & preprocessing script
-├── requirements.txt        # Project dependencies
-├── templates/              # HTML Templates for the UI
-│   └── index.html
-├── static/                 # CSS/JS for the UI
-│   ├── style.css
-│   └── script.js
-├── model/                  # Saved artifacts
-│   ├── laptop_price_model.pkl
-│   └── metadata.pkl
-└── README.md               # Project documentation
-```
-
-## ⚙️ Installation & Setup
-
-We recommend using a Python Virtual Environment (`venv`) to run this project.
-
-1. **Create and activate a virtual environment**:
-   ```bash
-   python -m venv venv
-   # Windows:
-   .\venv\Scripts\Activate.ps1
-   # Mac/Linux:
-   source venv/bin/activate
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Train the model**:
-   Before running predictions, generate the model artifacts by training on the dataset:
-   ```bash
-   python train_model.py
-   ```
-
-## 🖥️ Usage
-
-### 1. Web UI (Recommended)
-Run the Flask server to interact with the model via a beautiful web interface.
 ```bash
+# 1. Create and activate virtual environment
+python -m venv venv
+venv\Scripts\activate  # Windows
+# source venv/bin/activate  # Linux/Mac
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Train the model (first time only)
+python train_model.py
+
+# 4. Start Flask
 python app.py
+# → http://localhost:5000
 ```
-Then, open your web browser and navigate to `http://127.0.0.1:5000`.
 
-### 2. Command Line Interface (CLI)
-Run the prediction script and follow the interactive prompts:
+### Frontend (React)
+
 ```bash
-python main.py
+cd frontend
+npm install
+npm run dev
+# → http://localhost:5173  (proxies /api to Flask:5000)
 ```
 
-## 📊 Dataset Overview
+### Build for Production
 
-The model is trained on a comprehensive dataset (`data.csv`) containing various laptop configurations. Key features include:
-- **Categorical**: Brand, Processor, RAM Type, ROM Type, GPU, OS.
-- **Numerical**: Spec Rating, RAM (GB), ROM (GB), Display Size, Resolution, Warranty.
+```bash
+cd frontend
+npm run build
+# Output: frontend/dist/
+# Flask will serve this automatically
+```
 
-## 📈 Performance
+## Docker (local)
 
-The model evaluation results (calculated on an 80/20 train-test split):
-- **R² Score**: ~0.85+ (Varies slightly based on training)
-- **Mean Absolute Error (MAE)**: Provides realistic price deviation based on market volatility.
+```bash
+docker build -t laptoplens .
+docker run -p 7860:7860 laptoplens
+# → http://localhost:7860
+```
 
----
+## Deploy to Hugging Face Spaces
 
-*Developed with ❤️ for the Developer Community.*
+1. Create a new Space → **Docker** SDK
+2. Push this repository:
+   ```bash
+   git remote add hf https://huggingface.co/spaces/YOUR_USERNAME/laptoplens
+   git push hf main
+   ```
+3. HF Spaces will auto-build and deploy (~5 min first time)
+
+> ⚠️ The `/data` directory on HF Spaces is the persistent volume — SQLite DB is stored there.
+
+## Project Structure
+
+```
+laptop-price-prediction/
+├── app.py                 # Flask API
+├── train_model.py         # XGBoost training
+├── data.csv               # Training dataset
+├── requirements.txt
+├── Dockerfile             # Multi-stage build
+├── database/
+│   ├── db.py              # SQLite CRUD
+│   └── schema.sql
+├── scraper/
+│   ├── cache.py           # TTL in-memory cache
+│   ├── mock_data.py       # Demo data generator
+│   └── flipkart_scraper.py # Playwright scraper (optional)
+├── model/                 # Trained model artifacts
+└── frontend/              # React app
+    ├── src/
+    │   ├── App.jsx
+    │   ├── components/
+    │   └── api/client.js
+    ├── package.json
+    └── vite.config.js
+```
+
+## Scraping Disclaimer
+
+> Live scraping from Flipkart/Amazon may violate their Terms of Service.
+> The Playwright scraper is included for educational purposes.
+> For production, use the [Flipkart Affiliate API](https://affiliate.flipkart.com/) (free).
+
+## License
+
+MIT — Personal project, not for commercial redistribution of scraped data.
