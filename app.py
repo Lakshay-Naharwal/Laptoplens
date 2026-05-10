@@ -22,9 +22,8 @@ import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-from database.db import init_db, upsert_product, insert_price, get_price_history, get_price_stats
 from scraper.cache import scrape_cache
-from scraper.mock_data import generate_mock_listings, generate_mock_price_history
+from scraper.mock_data import generate_mock_listings
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -65,9 +64,6 @@ except Exception as e:
     logger.error(f"Failed to load model: {e}")
     model = None
     metadata = None
-
-# ─── Initialise database ──────────────────────────────────────────────────────
-init_db()
 
 # ─── Load real scraped data for recommendation engine ─────────────────────────
 REAL_DATA_PATH  = BASE_DIR / "data_real.csv"
@@ -346,27 +342,6 @@ def api_predict():
         return jsonify({"error": str(e)}), 400
 
 
-@app.route("/predict", methods=["POST"])
-def legacy_predict():
-    """Backward-compatible endpoint for the old Jinja frontend."""
-    result = api_predict()
-    if isinstance(result, tuple):
-        response, status = result
-    else:
-        response, status = result, result.status_code
-
-    if status >= 400:
-        return result
-
-    payload = response.get_json() or {}
-    return jsonify({
-        "success": True,
-        "prediction": payload.get("price"),
-        "formatted": payload.get("formatted"),
-        "formatted_range": payload.get("formatted_range"),
-    })
-
-
 @app.route("/api/recommend", methods=["POST"])
 def api_recommend():
     """
@@ -485,85 +460,6 @@ def api_laptop_image():
     except Exception as e:
         logger.warning(f"Image fetch failed for '{name}': {e}")
         return jsonify({"image_url": "", "name": name})
-
-
-@app.route("/api/price-history")
-def api_price_history():
-    """
-    Fetch price history for a product over a given timeframe.
-
-    Query params:
-        product_id: str
-        days:       int  (default: 30)
-
-    Response:
-        {
-          product_id: str,
-          history:    [{price, scraped_at}, ...],
-          stats:      {min_price, max_price, avg_price, current_price, data_points},
-          tracking_started: bool   (true if history just started — <3 data points)
-        }
-    """
-    product_id = request.args.get("product_id")
-    days       = _as_int(request.args.get("days"), 30, 1, 365)
-
-    if not product_id:
-        return jsonify({"error": "product_id is required"}), 400
-
-    history = get_price_history(product_id, days=days)
-    stats   = get_price_stats(product_id, days=days)
-
-    # If no real DB history, generate mock on-the-fly for the demo
-    source = "db"
-    if not history:
-        current = stats.get("current_price", 50000)
-        history = generate_mock_price_history(product_id, current, days=days)
-        source = "mock"
-        stats   = {
-            "min_price":     min(h["price"] for h in history),
-            "max_price":     max(h["price"] for h in history),
-            "avg_price":     round(sum(h["price"] for h in history) / len(history), 2),
-            "current_price": history[-1]["price"],
-            "data_points":   len(history),
-        }
-
-    return jsonify({
-        "product_id":       product_id,
-        "days":             days,
-        "history":          history,
-        "stats":            stats,
-        "tracking_started": len(history) < 3,
-        "source":           source,
-    })
-
-
-@app.route("/api/track-price", methods=["POST"])
-def api_track_price():
-    """
-    Manually append a price snapshot (e.g., called after a fresh scrape).
-
-    Body (JSON):
-        product_id:   str
-        product_name: str
-        source:       str
-        price:        float
-    """
-    try:
-        data = _json_body()
-        if not data.get("product_id") or not data.get("product_name"):
-            return jsonify({"error": "product_id and product_name are required"}), 400
-        price = _as_float(data.get("price"), 0.0, 0.0)
-        if price <= 0:
-            return jsonify({"error": "price must be greater than 0"}), 400
-        insert_price(
-            product_id=data["product_id"],
-            product_name=data["product_name"],
-            source=data.get("source", "manual"),
-            price=price,
-        )
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
 
 
 # ─── Serve React SPA ──────────────────────────────────────────────────────────

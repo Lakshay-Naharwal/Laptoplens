@@ -33,15 +33,4 @@ export const predictPrice = (specs) =>
 export const fetchRecommendations = (params) =>
   api.post("/api/recommend", params).then((r) => r.data);
 
-/**
- * Fetch price history for a product.
- * @param {string} productId
- * @param {number} days - 7 | 30 | 90 | 180 | 365
- * @returns {Promise<{history, stats, tracking_started}>}
- */
-export const fetchPriceHistory = (productId, days = 30) =>
-  api
-    .get("/api/price-history", { params: { product_id: productId, days } })
-    .then((r) => r.data);
-
 export default api;

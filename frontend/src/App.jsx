@@ -143,7 +143,7 @@ export default function App() {
           </h2>
           <p className="text-slate-400 text-base max-w-xl mx-auto text-balance">
             Enter your desired specs and get an AI-predicted fair price range,
-            matched with real-time listings and full price history tracking.
+            matched with real-time listings.
           </p>
         </div>
 
