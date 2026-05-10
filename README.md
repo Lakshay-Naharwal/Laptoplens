@@ -22,7 +22,7 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 | 🤖 **AI Price Prediction** | XGBoost model trained on 900+ laptops, predicts ±MAE accuracy |
 | 🎚️ **Adjustable Tolerance** | You control the ±₹ confidence band (tight/flexible) |
 | 📦 **Recommendation Cards** | Matching laptops with spec match scores |
-| 📈 **Price History Chart** | Line chart with 7D/1M/3M/6M/1Y timeframes |
+| 🛒 **Dynamic Buying Links** | Instantly redirects to live Flipkart search results to avoid dead links |
 | 🏷️ **Use-Case Filter** | Gaming / Office / Design / Programming / General |
 | 📝 **Mock → Live** | Demo works offline; live Flipkart scraper is optional |
 
@@ -31,7 +31,6 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 - **Frontend**: React 18 + Vite + Tailwind CSS
 - **Backend**: Flask 3 + Gunicorn
 - **ML Model**: XGBoost + scikit-learn Pipeline
-- **Database**: SQLite (price history, append-only)
 - **Scraping**: Playwright (optional) + mock data fallback
 - **Deployment**: Hugging Face Spaces (Docker)
 
@@ -99,8 +98,6 @@ docker run -p 7860:7860 laptoplens
    git push hf main
    ```
 3. HF Spaces will auto-build and deploy (~5 min first time)
-
-> ⚠️ The `/data` directory on HF Spaces is the persistent volume — SQLite DB is stored there.
 
 ## Project Structure
 
