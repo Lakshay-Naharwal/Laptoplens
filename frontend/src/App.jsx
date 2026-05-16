@@ -79,10 +79,11 @@ export default function App() {
         confidence_band:  tolerance,
         use_case:         _formData.use_case ?? "",
         ram:              _formData.Ram ?? 0,
-        gpu_type:         (_formData.GPU || "").toLowerCase().includes("rtx") ||
-                          (_formData.GPU || "").toLowerCase().includes("gtx") ||
-                          (_formData.GPU || "").toLowerCase().includes("mx")
+        gpu_type:         _formData.gpu_vram > 0 || _formData.gpu_brand === "NVIDIA"
                             ? "dedicated" : "integrated",
+        cpu_tier:         _formData.cpu_tier ?? "",
+        cpu_brand:        _formData.cpu_brand ?? "",
+        brand:            _formData.brand ?? "",
         use_live:         false,
       });
       setLaptops(list);

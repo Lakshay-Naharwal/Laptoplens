@@ -41,10 +41,7 @@ print(f"Training source: {args.data_source} ({data_path})")
 df = pd.read_csv(data_path)
 
 # ─── 2. Preprocessing ─────────────────────────────────────────────────────────
-# Drop redundant/identifier columns
-drop_cols = [c for c in ["Unnamed: 0.1", "Unnamed: 0", "name", "CPU"] if c in df.columns]
-df = df.drop(drop_cols, axis=1)
-
+import re
 
 def extract_number(val):
     """Pull the first numeric substring from a value (e.g. '8GB' → 8.0)."""
@@ -54,26 +51,78 @@ def extract_number(val):
     except Exception:
         return 0.0
 
-
 def clean_rom(val):
     """Normalise storage to GB (TB values × 1024)."""
     val = str(val).upper()
     num = extract_number(val)
     return num * 1024 if "TB" in val else num
 
+def get_cores(val):
+    val = str(val).lower()
+    if 'dual' in val: return 2
+    if 'quad' in val: return 4
+    if 'hexa' in val: return 6
+    if 'octa' in val: return 8
+    match = re.search(r'(\d+)\s*cores', val)
+    return int(match.group(1)) if match else 4
 
+def get_threads(val):
+    match = re.search(r'(\d+)\s*threads', val)
+    return int(match.group(1)) if match else 8
+
+def get_cpu_brand(val):
+    val = str(val).lower()
+    if 'intel' in val: return 'Intel'
+    if 'amd' in val: return 'AMD'
+    if 'apple' in val: return 'Apple'
+    return 'Other'
+
+def get_cpu_tier(val):
+    val = str(val).lower()
+    for tier in ['i9', 'i7', 'i5', 'i3', 'ryzen 9', 'ryzen 7', 'ryzen 5', 'ryzen 3', 'm1', 'm2', 'm3', 'celeron', 'pentium', 'athlon']:
+        if tier in val: return tier.upper()
+    return 'Other'
+
+def get_gpu_brand(val):
+    val = str(val).lower()
+    if any(k in val for k in ['nvidia', 'geforce', 'rtx', 'gtx']): return 'NVIDIA'
+    if any(k in val for k in ['amd', 'radeon']): return 'AMD'
+    if any(k in val for k in ['intel', 'iris', 'uhd']): return 'Intel'
+    if any(k in val for k in ['apple', 'm1', 'm2', 'm3']): return 'Apple'
+    return 'Other'
+
+def get_gpu_vram(val):
+    match = re.search(r'(\d+)gb', str(val).lower())
+    return float(match.group(1)) if match else 0.0
+
+# Initial cleaning
 df["Ram"] = df["Ram"].apply(extract_number)
 df["ROM"] = df["ROM"].apply(clean_rom)
 df["price"] = pd.to_numeric(df["price"], errors="coerce")
 df = df.dropna(subset=["price"])
 df = df[(df["price"] >= 10000) & (df["price"] <= 500000)]
 
+# Feature Engineering
+if 'CPU' in df.columns:
+    df['cpu_cores'] = df['CPU'].apply(get_cores)
+    df['cpu_threads'] = df['CPU'].apply(get_threads)
+else:
+    df['cpu_cores'] = 4
+    df['cpu_threads'] = 8
+
+df['cpu_brand'] = df['processor'].apply(get_cpu_brand)
+df['cpu_tier'] = df['processor'].apply(get_cpu_tier)
+df['gpu_brand'] = df['GPU'].apply(get_gpu_brand)
+df['gpu_vram'] = df['GPU'].apply(get_gpu_vram)
+
 # ─── 3. Features & Target ─────────────────────────────────────────────────────
-categorical_cols = ["brand", "processor", "Ram_type", "ROM_type", "GPU", "OS"]
+categorical_cols = ["brand", "cpu_brand", "cpu_tier", "Ram_type", "ROM_type", "gpu_brand", "OS"]
 numerical_cols = [
-    # spec_rating removed — it's a scraped/computed field users can't know
     "Ram",
     "ROM",
+    "cpu_cores",
+    "cpu_threads",
+    "gpu_vram",
     "display_size",
     "resolution_width",
     "resolution_height",

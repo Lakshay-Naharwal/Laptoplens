@@ -12,18 +12,22 @@ import { fetchMetadata } from "../api/client";
 
 // Map raw model column names to user-friendly labels
 const LABEL_MAP = {
-  brand: "Brand",
-  processor: "Processor",
+  brand: "Laptop Brand",
+  cpu_brand: "CPU Brand",
+  cpu_tier: "CPU Tier",
+  cpu_cores: "CPU Cores",
+  cpu_threads: "CPU Threads",
   Ram_type: "RAM Type",
   ROM_type: "Storage Type",
-  GPU: "GPU",
+  gpu_brand: "GPU Brand",
+  gpu_vram: "GPU VRAM (GB)",
   OS: "Operating System",
   Ram: "RAM (GB)",
   ROM: "Storage (GB)",
-  display_size: "Display Size (inches)",
-  resolution_width: "Resolution Width (px)",
-  resolution_height: "Resolution Height (px)",
-  warranty: "Warranty (years)",
+  display_size: "Display Size (in)",
+  resolution_width: "Width (px)",
+  resolution_height: "Height (px)",
+  warranty: "Warranty (yrs)",
 };
 
 // Columns that should never be shown in the form (computed/scraped fields)
@@ -49,29 +53,23 @@ const USE_CASES = [
 const getFilteredOptions = (col, options, useCase) => {
   if (!useCase || useCase === "General" || !options) return options || [];
 
-  if (col === "GPU") {
-    const isDedicated = (o) => /rtx|gtx|rx |geforce|radeon pro/i.test(o);
-    const isApple = (o) => /m1|m2|m3|core gpu/i.test(o);
-    
+  if (col === "gpu_brand") {
     if (useCase === "Office") {
-      // Exclude dedicated GPUs
-      return options.filter(o => !isDedicated(o));
+      // Exclude dedicated brands often associated with gaming if needed, 
+      // but here we just return all and let user choose.
+      return options;
     }
     if (useCase === "Gaming") {
-      // Only dedicated GPUs
-      return options.filter(o => isDedicated(o));
-    }
-    if (useCase === "Design") {
-      // Dedicated or Apple M-series
-      return options.filter(o => isDedicated(o) || isApple(o));
+      // Prioritize NVIDIA/AMD
+      return options.filter(o => ["NVIDIA", "AMD"].includes(o));
     }
   }
 
-  if (col === "processor") {
+  if (col === "cpu_tier") {
     if (useCase === "Programming") {
       // Exclude entry level
-      const isEntryLevel = (o) => /i3|ryzen 3|celeron|pentium|athlon/i.test(o);
-      return options.filter(o => !isEntryLevel(o));
+      const entryTiers = ["I3", "RYZEN 3", "CELERON", "PENTIUM", "ATHLON", "OTHER"];
+      return options.filter(o => !entryTiers.includes(o.toUpperCase()));
     }
   }
 

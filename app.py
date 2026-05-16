@@ -135,6 +135,46 @@ def _as_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
+import re
+
+def get_cores(val):
+    val = str(val).lower()
+    if 'dual' in val: return 2
+    if 'quad' in val: return 4
+    if 'hexa' in val: return 6
+    if 'octa' in val: return 8
+    match = re.search(r'(\d+)\s*cores', val)
+    return int(match.group(1)) if match else 4
+
+def get_threads(val):
+    match = re.search(r'(\d+)\s*threads', val)
+    return int(match.group(1)) if match else 8
+
+def get_cpu_brand(val):
+    val = str(val).lower()
+    if 'intel' in val: return 'Intel'
+    if 'amd' in val: return 'AMD'
+    if 'apple' in val: return 'Apple'
+    return 'Other'
+
+def get_cpu_tier(val):
+    val = str(val).lower()
+    for tier in ['i9', 'i7', 'i5', 'i3', 'ryzen 9', 'ryzen 7', 'ryzen 5', 'ryzen 3', 'm1', 'm2', 'm3', 'celeron', 'pentium', 'athlon']:
+        if tier in val: return tier.upper()
+    return 'Other'
+
+def get_gpu_brand(val):
+    val = str(val).lower()
+    if any(k in val for k in ['nvidia', 'geforce', 'rtx', 'gtx']): return 'NVIDIA'
+    if any(k in val for k in ['amd', 'radeon']): return 'AMD'
+    if any(k in val for k in ['intel', 'iris', 'uhd']): return 'Intel'
+    if any(k in val for k in ['apple', 'm1', 'm2', 'm3']): return 'Apple'
+    return 'Other'
+
+def get_gpu_vram(val):
+    match = re.search(r'(\d+)gb', str(val).lower())
+    return float(match.group(1)) if match else 0.0
+
 def _recommend_from_real_data(
     predicted_price: float,
     confidence_band: float,
@@ -163,22 +203,23 @@ def _recommend_from_real_data(
         name  = str(row.get("name", ""))
         lower = name.lower()
 
-        # Use-case keyword filter (skip only if use_case set AND no keyword matches)
+        # Use-case keyword filter
         if use_case and use_case_kws and use_case != "General":
             if not any(kw in lower for kw in use_case_kws):
                 continue
 
-        # Match score (simplified — price proximity + GPU type)
+        # Match score calculation
         price_delta = abs(price - predicted_price)
-        price_score = max(0, 40 - int(price_delta / 500))   # 0–40
+        price_score = max(0, 40 - int(price_delta / 500))
 
-        gpu_str  = str(row.get("GPU", "")).lower()
-        
-        # --- Strict Use Case Filtering ---
-        is_dedicated = any(k in gpu_str for k in ["rtx", "gtx", "rx ", "geforce", "radeon pro"])
-        is_apple = any(k in gpu_str for k in ["m1", "m2", "m3", "core gpu"])
+        gpu_raw = str(row.get("GPU", ""))
+        gpu_brand = get_gpu_brand(gpu_raw)
+        gpu_vram = get_gpu_vram(gpu_raw)
+        is_dedicated = gpu_vram > 0 or gpu_brand == 'NVIDIA'
+        is_apple = gpu_brand == 'Apple'
         is_basic_integrated = not is_dedicated and not is_apple
 
+        # Use case logic using engineered features
         if use_case == "Office" and is_dedicated:
             continue
         if use_case == "Gaming" and not is_dedicated:
@@ -186,33 +227,37 @@ def _recommend_from_real_data(
         if use_case == "Design" and is_basic_integrated:
             continue
         
-        cpu_str = str(row.get("processor", "")).lower()
-        is_entry_cpu = any(k in cpu_str for k in ["i3", "ryzen 3", "celeron", "pentium", "athlon"])
+        cpu_raw = str(row.get("processor", ""))
+        cpu_tier = get_cpu_tier(cpu_raw)
+        is_entry_cpu = cpu_tier in ["I3", "RYZEN 3", "CELERON", "PENTIUM", "ATHLON"]
         if use_case == "Programming" and is_entry_cpu:
             continue
-        # ---------------------------------
-
+        
+        # Scoring based on user preferences
         gpu_pref = user_specs.get("gpu_type", "integrated").lower()
         if gpu_pref == "dedicated" and is_dedicated:
-            gpu_score = 35
+            gpu_score = 30
         elif gpu_pref == "integrated" and (is_basic_integrated or is_apple):
-            gpu_score = 35
+            gpu_score = 30
         else:
-            gpu_score = 10
+            gpu_score = 5
 
         ram_val   = float(row.get("Ram", 0))
         user_ram  = float(user_specs.get("ram", 0))
-        ram_score = 25 if (user_ram and ram_val >= user_ram) else (12 if ram_val >= user_ram // 2 else 0)
+        ram_score = 20 if (user_ram and ram_val >= user_ram) else (10 if ram_val >= user_ram // 2 else 0)
 
-        match_score = min(price_score + gpu_score + ram_score, 100)
+        brand_score = 10 if user_specs.get("brand") == row.get("brand") else 0
+        cpu_score   = 10 if user_specs.get("cpu_tier") == cpu_tier else 0
+
+        match_score = min(price_score + gpu_score + ram_score + brand_score + cpu_score, 100)
 
         pid = hashlib.md5(name.lower().encode()).hexdigest()[:12]
         candidates.append({
             "product_id":  pid,
             "name":        name,
             "brand":       str(row.get("brand", "")),
-            "cpu":         str(row.get("processor", "")),
-            "gpu":         str(row.get("GPU", "")),
+            "cpu":         cpu_raw,
+            "gpu":         gpu_raw,
             "ram":         f"{int(float(row.get('Ram', 8)))}GB {row.get('Ram_type','DDR4')}",
             "storage":     f"{int(float(row.get('ROM', 512)))}GB {row.get('ROM_type','SSD')}",
             "display":     f"{row.get('display_size', 15.6)}\" FHD",
@@ -220,7 +265,7 @@ def _recommend_from_real_data(
             "seller":      str(row.get("source", "scraped")).title(),
             "source":      str(row.get("source", "scraped")),
             "buy_url":     str(row.get("buy_url", "") or ""),
-            "image_url":   str(row.get("image_url", "") or ""),  # ← from same card
+            "image_url":   str(row.get("image_url", "") or ""),
             "in_band":     price_delta <= confidence_band,
             "price_delta": round(price - predicted_price, 2),
             "match_score": match_score,
@@ -369,6 +414,9 @@ def api_recommend():
             "use_case":   use_case,
             "ram":        _as_float(data.get("ram"), 0.0, 0.0),
             "gpu_type":   data.get("gpu_type", "integrated"),
+            "cpu_tier":   data.get("cpu_tier", ""),
+            "cpu_brand":  data.get("cpu_brand", ""),
+            "brand":      data.get("brand", ""),
         }
 
         # ── Cache key ───────────────────────────────────────────────────────
