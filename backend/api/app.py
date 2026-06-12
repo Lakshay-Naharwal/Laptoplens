@@ -22,16 +22,16 @@ import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-from scraper.cache import scrape_cache
-from scraper.mock_data import generate_mock_listings
+from backend.scraper.cache import scrape_cache
+from backend.scraper.mock_data import generate_mock_listings
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # ─── App setup ────────────────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent
-REACT_BUILD = BASE_DIR / "frontend" / "dist"   # React production build output
+BASE_DIR    = Path(__file__).parent.parent
+REACT_BUILD = BASE_DIR.parent / "frontend" / "dist"   # React production build output
 
 app = Flask(
     __name__,
@@ -51,8 +51,8 @@ if cors_origins:
     CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 
 # ─── Load ML model + metadata ─────────────────────────────────────────────────
-MODEL_PATH    = BASE_DIR / "model" / "laptop_price_model.pkl"
-METADATA_PATH = BASE_DIR / "model" / "metadata.pkl"
+MODEL_PATH    = BASE_DIR / "ml" / "model" / "laptop_price_model.pkl"
+METADATA_PATH = BASE_DIR / "ml" / "model" / "metadata.pkl"
 
 try:
     with open(MODEL_PATH, "rb") as f:
@@ -66,7 +66,7 @@ except Exception as e:
     metadata = None
 
 # ─── Load real scraped data for recommendation engine ─────────────────────────
-REAL_DATA_PATH  = BASE_DIR / "data_real.csv"
+REAL_DATA_PATH  = BASE_DIR / "data" / "raw" / "data_real.csv"
 _real_laptops: list[dict] = []
 
 try:
@@ -135,46 +135,7 @@ def _as_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
-import re
-
-def get_cores(val):
-    val = str(val).lower()
-    if 'dual' in val: return 2
-    if 'quad' in val: return 4
-    if 'hexa' in val: return 6
-    if 'octa' in val: return 8
-    match = re.search(r'(\d+)\s*cores', val)
-    return int(match.group(1)) if match else 4
-
-def get_threads(val):
-    match = re.search(r'(\d+)\s*threads', val)
-    return int(match.group(1)) if match else 8
-
-def get_cpu_brand(val):
-    val = str(val).lower()
-    if 'intel' in val: return 'Intel'
-    if 'amd' in val: return 'AMD'
-    if 'apple' in val: return 'Apple'
-    return 'Other'
-
-def get_cpu_tier(val):
-    val = str(val).lower()
-    for tier in ['i9', 'i7', 'i5', 'i3', 'ryzen 9', 'ryzen 7', 'ryzen 5', 'ryzen 3', 'm1', 'm2', 'm3', 'celeron', 'pentium', 'athlon']:
-        if tier in val: return tier.upper()
-    return 'Other'
-
-def get_gpu_brand(val):
-    val = str(val).lower()
-    if any(k in val for k in ['nvidia', 'geforce', 'rtx', 'gtx']): return 'NVIDIA'
-    if any(k in val for k in ['amd', 'radeon']): return 'AMD'
-    if any(k in val for k in ['intel', 'iris', 'uhd']): return 'Intel'
-    if any(k in val for k in ['apple', 'm1', 'm2', 'm3']): return 'Apple'
-    return 'Other'
-
-def get_gpu_vram(val):
-    match = re.search(r'(\d+)gb', str(val).lower())
-    return float(match.group(1)) if match else 0.0
-
+from backend.api.utils import get_cores, get_threads, get_cpu_brand, get_cpu_tier, get_cpu_gen, get_gpu_brand, get_gpu_vram
 def _recommend_from_real_data(
     predicted_price: float,
     confidence_band: float,
@@ -229,7 +190,7 @@ def _recommend_from_real_data(
         
         cpu_raw = str(row.get("processor", ""))
         cpu_tier = get_cpu_tier(cpu_raw)
-        is_entry_cpu = cpu_tier in ["I3", "RYZEN 3", "CELERON", "PENTIUM", "ATHLON"]
+        is_entry_cpu = cpu_tier in ["Core i3", "Ryzen 3", "Celeron", "Pentium", "Athlon"]
         if use_case == "Programming" and is_entry_cpu:
             continue
         
@@ -410,12 +371,15 @@ def api_recommend():
         use_case         = data.get("use_case", "")
         use_live         = _as_bool(data.get("use_live"), False)
 
+        processor_val = data.get("processor", "")
+        gpu_val = data.get("GPU", "")
+
         user_specs = {
             "use_case":   use_case,
-            "ram":        _as_float(data.get("ram"), 0.0, 0.0),
-            "gpu_type":   data.get("gpu_type", "integrated"),
-            "cpu_tier":   data.get("cpu_tier", ""),
-            "cpu_brand":  data.get("cpu_brand", ""),
+            "ram":        _as_float(data.get("Ram"), 0.0, 0.0),
+            "gpu_type":   "dedicated" if get_gpu_vram(gpu_val) > 0 or get_gpu_brand(gpu_val) == "NVIDIA" else "integrated",
+            "cpu_tier":   get_cpu_tier(processor_val),
+            "cpu_brand":  get_cpu_brand(processor_val),
             "brand":      data.get("brand", ""),
         }
 
@@ -541,6 +505,8 @@ def _build_search_query(user_specs: dict, use_case: str) -> str:
         parts.append("dedicated graphics")
     if use_case in ("Gaming",):
         parts.append("gaming")
+    if user_specs.get("brand"):
+        parts.append(user_specs["brand"])
     return " ".join(parts)
 
 

@@ -38,11 +38,9 @@ RUN playwright install chromium \
     && playwright install-deps chromium \
     || echo "Playwright browser install failed; live scraping will be disabled"
 
-COPY --chown=user app.py train_model.py data.csv data_real.csv ./
-COPY --chown=user model/ ./model/
-COPY --chown=user scraper/ ./scraper/
+COPY --chown=user backend/ ./backend/
 COPY --chown=user --from=frontend-builder /build/frontend/dist ./frontend/dist
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 2 --timeout 120 --access-logfile - app:app"]
+CMD ["sh", "-c", "PYTHONPATH=$HOME/app gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 2 --timeout 120 --access-logfile - backend.api.app:app"]
