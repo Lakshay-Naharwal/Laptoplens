@@ -99,6 +99,20 @@ docker run -p 7860:7860 laptoplens
    ```
 3. HF Spaces will auto-build and deploy (~5 min first time)
 
+## Split Frontend/Backend Deployment
+
+If the Flask backend is deployed on Hugging Face Spaces and the React frontend is
+deployed separately on Vercel, configure both sides with their public origins:
+
+- In Vercel, set `VITE_API_BASE_URL` to your Hugging Face Space URL, for example
+  `https://YOUR_USERNAME-YOUR_SPACE_NAME.hf.space`.
+- In Hugging Face Spaces, set `CORS_ORIGINS` to your Vercel app URL, for example
+  `https://your-app.vercel.app`.
+
+Without `VITE_API_BASE_URL`, the Vercel build calls `/api/...` on the Vercel
+domain. Without `CORS_ORIGINS`, the browser blocks calls from Vercel to Hugging
+Face.
+
 ## Project Structure
 
 ```

@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { apiUrl } from "../api/client";
 
 const fmt = (n) => n?.toLocaleString("en-IN", { maximumFractionDigits: 0 }) ?? "—";
 
@@ -42,7 +43,7 @@ function LazyImage({ initialSrc, name }) {
     }
     if (!name) { setLoading(false); return; }
     let cancelled = false;
-    fetch(`/api/laptop-image?name=${encodeURIComponent(name)}`)
+    fetch(apiUrl(`/api/laptop-image?name=${encodeURIComponent(name)}`))
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled && d.image_url) {
