@@ -38,17 +38,7 @@ app = Flask(
     static_folder=str(REACT_BUILD),
     static_url_path="",
 )
-# Allow local Vite during development; production can override with CORS_ORIGINS.
-cors_origins = [
-    origin.strip()
-    for origin in os.environ.get(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
-    if origin.strip()
-]
-if cors_origins:
-    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # ─── Load ML model + metadata ─────────────────────────────────────────────────
 MODEL_PATH    = BASE_DIR / "ml" / "model" / "laptop_price_model.pkl"
