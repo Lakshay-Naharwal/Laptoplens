@@ -3,10 +3,14 @@ import pandas as pd
 import numpy as np
 
 
+import os
+from pathlib import Path
+
 def load_resources():
-    with open("model/laptop_price_model.pkl", "rb") as f:
+    base_dir = Path(__file__).parent.parent
+    with open(base_dir / "ml" / "model" / "laptop_price_model.pkl", "rb") as f:
         model = pickle.load(f)
-    with open("model/metadata.pkl", "rb") as f:
+    with open(base_dir / "ml" / "model" / "metadata.pkl", "rb") as f:
         metadata = pickle.load(f)
     return model, metadata
 

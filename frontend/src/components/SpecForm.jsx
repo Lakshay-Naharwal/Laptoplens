@@ -12,22 +12,18 @@ import { fetchMetadata } from "../api/client";
 
 // Map raw model column names to user-friendly labels
 const LABEL_MAP = {
-  brand: "Laptop Brand",
-  cpu_brand: "CPU Brand",
-  cpu_tier: "CPU Tier",
-  cpu_cores: "CPU Cores",
-  cpu_threads: "CPU Threads",
+  brand: "Brand",
+  processor: "Processor",
   Ram_type: "RAM Type",
   ROM_type: "Storage Type",
-  gpu_brand: "GPU Brand",
-  gpu_vram: "GPU VRAM (GB)",
+  GPU: "GPU",
   OS: "Operating System",
   Ram: "RAM (GB)",
   ROM: "Storage (GB)",
-  display_size: "Display Size (in)",
-  resolution_width: "Width (px)",
-  resolution_height: "Height (px)",
-  warranty: "Warranty (yrs)",
+  display_size: "Display Size (inches)",
+  resolution_width: "Resolution Width (px)",
+  resolution_height: "Resolution Height (px)",
+  warranty: "Warranty (years)",
 };
 
 // Columns that should never be shown in the form (computed/scraped fields)
@@ -50,30 +46,33 @@ const USE_CASES = [
   { id: "General",     icon: "🌐", color: "from-slate-500 to-slate-400" },
 ];
 
-const getFilteredOptions = (col, options, useCase) => {
-  if (!useCase || useCase === "General" || !options) return options || [];
+const getFilteredOptions = (col, options, useCase, values = {}) => {
+  if (!options) return [];
+  let filtered = [...options];
 
-  if (col === "gpu_brand") {
+  if (col === "GPU") {
+    const isDedicated = (o) => /rtx|gtx|rx |geforce|radeon pro/i.test(o);
+    const isApple = (o) => /m1|m2|m3|core gpu/i.test(o);
+    
     if (useCase === "Office") {
-      // Exclude dedicated brands often associated with gaming if needed, 
-      // but here we just return all and let user choose.
-      return options;
+      return options.filter(o => !isDedicated(o));
     }
     if (useCase === "Gaming") {
-      // Prioritize NVIDIA/AMD
-      return options.filter(o => ["NVIDIA", "AMD"].includes(o));
+      return options.filter(o => isDedicated(o));
+    }
+    if (useCase === "Design") {
+      return options.filter(o => isDedicated(o) || isApple(o));
     }
   }
 
-  if (col === "cpu_tier") {
+  if (col === "processor") {
     if (useCase === "Programming") {
-      // Exclude entry level
-      const entryTiers = ["I3", "RYZEN 3", "CELERON", "PENTIUM", "ATHLON", "OTHER"];
-      return options.filter(o => !entryTiers.includes(o.toUpperCase()));
+      const isEntryLevel = (o) => /i3|ryzen 3|celeron|pentium|athlon/i.test(o);
+      return options.filter(o => !isEntryLevel(o));
     }
   }
 
-  return options;
+  return filtered;
 };
 
 const getMinVal = (col, useCase) => {
@@ -111,7 +110,7 @@ export default function SpecForm({ onPredict, isLoading }) {
       // Check categorical
       metadata.categorical_cols.forEach((col) => {
         if (prev[col]) {
-          const allowed = getFilteredOptions(col, metadata.categories[col], useCase);
+          const allowed = getFilteredOptions(col, metadata.categories[col], useCase, prev);
           if (!allowed.includes(prev[col])) {
             newVals[col] = "";
             changed = true;
@@ -204,75 +203,181 @@ export default function SpecForm({ onPredict, isLoading }) {
         </div>
       </div>
 
-      {/* ── Categorical dropdowns ─────────────────────────────────────────── */}
+      {/* ── Categorical & Numerical Inputs Grid ───────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {metadata.categorical_cols.map((col) => {
-          const options = getFilteredOptions(col, metadata.categories[col], useCase);
-          return (
-          <div key={col} className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-              {LABEL_MAP[col] || col}
-            </label>
-            <div className="relative">
-              <select
-                id={col}
-                value={values[col] || ""}
-                onChange={(e) => handleChange(col, e.target.value)}
-                required
-                className="
-                  w-full bg-bg-surface border border-white/8 rounded-xl
-                  px-4 py-2.5 text-sm text-white appearance-none
-                  focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30
-                  transition-all duration-200 cursor-pointer
-                "
-              >
-                <option value="" disabled>
-                  Select {LABEL_MAP[col] || col}
-                </option>
-                {options.map((opt) => (
-                  <option key={opt} value={opt} className="bg-bg-surface">
-                    {opt}
-                  </option>
-                ))}
-              </select>
-              {/* Chevron icon */}
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-                ▾
-              </span>
-            </div>
-          </div>
-        );
-        })}
-      </div>
+          if (col === "processor") {
+            // Split processor into Brand -> Tier -> Model
+            const parseProcessor = (str) => {
+              const lower = str.toLowerCase();
+              let brand = 'Other';
+              if (lower.includes('intel')) brand = 'Intel';
+              else if (lower.includes('amd') || lower.includes('ryzen') || lower.includes('athlon')) brand = 'AMD';
+              else if (lower.includes('apple') || /m[123]/.test(lower)) brand = 'Apple';
+              else if (lower.includes('snapdragon')) brand = 'Qualcomm';
+          
+              let tier = 'Other';
+              const iMatch = lower.match(/(i[3579]|ultra\s*[579])/);
+              if (iMatch) tier = `Core ${iMatch[1]}`;
+              else {
+                const rMatch = lower.match(/(ryzen\s*[3579])/);
+                if (rMatch) tier = rMatch[1].replace('r', 'R');
+                else {
+                  const mMatch = lower.match(/(m[123])/);
+                  if (mMatch) tier = mMatch[1].toUpperCase();
+                  else {
+                    const cMatch = lower.match(/(celeron|pentium|athlon|snapdragon)/);
+                    if (cMatch) tier = cMatch[1].charAt(0).toUpperCase() + cMatch[1].slice(1);
+                  }
+                }
+              }
+              return { brand, tier, original: str };
+            };
 
-      {/* ── Numerical inputs ──────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            const allProcs = getFilteredOptions(col, metadata.categories[col], useCase, values);
+            const parsedProcs = allProcs.map(parseProcessor);
+            
+            // Derive currently selected brand/tier based on `values.processor` or separate state
+            // It's easier to just use `values.cpuBrand` and `values.cpuTier` as transient states in `values`
+            const currentBrand = values._cpuBrand || "";
+            const currentTier = values._cpuTier || "";
+
+            const availableBrands = [...new Set(parsedProcs.map(p => p.brand))].sort();
+            const availableTiers = [...new Set(parsedProcs.filter(p => !currentBrand || p.brand === currentBrand).map(p => p.tier))].sort();
+            const availableModels = parsedProcs.filter(p => 
+              (!currentBrand || p.brand === currentBrand) && 
+              (!currentTier || p.tier === currentTier)
+            ).map(p => p.original);
+
+            return (
+              <div key="processor-group" className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4 border border-white/5 p-4 rounded-xl bg-white/5">
+                {/* CPU Brand */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                    CPU Brand
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={currentBrand}
+                      onChange={(e) => {
+                        handleChange("_cpuBrand", e.target.value);
+                        handleChange("_cpuTier", "");
+                        handleChange("processor", "");
+                      }}
+                      className="w-full bg-bg-surface border border-white/8 rounded-xl px-4 py-2.5 text-sm text-white appearance-none focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30 transition-all duration-200 cursor-pointer"
+                    >
+                      <option value="">Any Brand</option>
+                      {availableBrands.map((opt) => (
+                        <option key={opt} value={opt} className="bg-bg-surface">{opt}</option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">▾</span>
+                  </div>
+                </div>
+
+                {/* CPU Tier */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                    CPU Tier
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={currentTier}
+                      onChange={(e) => {
+                        handleChange("_cpuTier", e.target.value);
+                        handleChange("processor", "");
+                      }}
+                      className="w-full bg-bg-surface border border-white/8 rounded-xl px-4 py-2.5 text-sm text-white appearance-none focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30 transition-all duration-200 cursor-pointer"
+                    >
+                      <option value="">Any Tier</option>
+                      {availableTiers.map((opt) => (
+                        <option key={opt} value={opt} className="bg-bg-surface">{opt}</option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">▾</span>
+                  </div>
+                </div>
+
+                {/* CPU Model (Actual processor value) */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                    CPU Model
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={values[col] || ""}
+                      onChange={(e) => handleChange(col, e.target.value)}
+                      required
+                      className="w-full bg-bg-surface border border-white/8 rounded-xl px-4 py-2.5 text-sm text-white appearance-none focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30 transition-all duration-200 cursor-pointer"
+                    >
+                      <option value="" disabled>Select Model</option>
+                      {availableModels.map((opt) => (
+                        <option key={opt} value={opt} className="bg-bg-surface">{opt}</option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">▾</span>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          const options = getFilteredOptions(col, metadata.categories[col], useCase, values);
+          return (
+            <div key={col} className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                {LABEL_MAP[col] || col}
+              </label>
+              <div className="relative">
+                <select
+                  id={col}
+                  value={values[col] || ""}
+                  onChange={(e) => handleChange(col, e.target.value)}
+                  required
+                  className="
+                    w-full bg-bg-surface border border-white/8 rounded-xl
+                    px-4 py-2.5 text-sm text-white appearance-none
+                    focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30
+                    transition-all duration-200 cursor-pointer
+                  "
+                >
+                  <option value="" disabled>Select {LABEL_MAP[col] || col}</option>
+                  {options.map((opt) => (
+                    <option key={opt} value={opt} className="bg-bg-surface">{opt}</option>
+                  ))}
+                </select>
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">▾</span>
+              </div>
+            </div>
+          );
+        })}
+
         {metadata.numerical_cols.filter(col => !HIDDEN_COLS.has(col)).map((col) => {
           const minReq = getMinVal(col, useCase);
           return (
-          <div key={col} className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-              {LABEL_MAP[col] || col} {minReq > 0 && <span className="text-accent-blue lowercase ml-1">(min {minReq})</span>}
-            </label>
-            <input
-              id={col}
-              type="number"
-              step="any"
-              min={minReq}
-              value={values[col] || ""}
-              onChange={(e) => handleChange(col, e.target.value)}
-              placeholder={PLACEHOLDER_MAP[col] || "Enter value"}
-              required
-              className="
-                w-full bg-bg-surface border border-white/8 rounded-xl
-                px-4 py-2.5 text-sm text-white
-                focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30
-                transition-all duration-200
-                placeholder:text-slate-600
-              "
-            />
-          </div>
-        );
+            <div key={col} className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                {LABEL_MAP[col] || col} {minReq > 0 && <span className="text-accent-blue lowercase ml-1">(min {minReq})</span>}
+              </label>
+              <input
+                id={col}
+                type="number"
+                step="any"
+                min={minReq}
+                value={values[col] || ""}
+                onChange={(e) => handleChange(col, e.target.value)}
+                placeholder={PLACEHOLDER_MAP[col] || "Enter value"}
+                required
+                className="
+                  w-full bg-bg-surface border border-white/8 rounded-xl
+                  px-4 py-2.5 text-sm text-white
+                  focus:outline-none focus:border-accent-blue/50 focus:ring-1 focus:ring-accent-blue/30
+                  transition-all duration-200
+                  placeholder:text-slate-600
+                "
+              />
+            </div>
+          );
         })}
       </div>
 
