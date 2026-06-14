@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(
 log = logging.getLogger("scraper")
 
 ROOT    = Path(__file__).parent.parent
-OUT_CSV = ROOT / "data_real.csv"
+OUT_CSV = ROOT / "data" / "raw" / "data_real.csv"
 
 CSV_COLS = [
     "name", "brand", "price",

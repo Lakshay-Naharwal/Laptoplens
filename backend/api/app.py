@@ -7,8 +7,6 @@ Endpoints:
   GET  /api/metadata        → form options + model stats
   POST /api/predict         → ML price prediction + confidence band
   POST /api/recommend       → mock/live laptop recommendations
-  GET  /api/price-history   → time-series price data for a product
-  POST /api/track-price     → append a price snapshot to DB
 """
 
 import os
@@ -395,7 +393,7 @@ def api_recommend():
 
         if use_live:
             try:
-                from scraper.flipkart_scraper import scrape_flipkart
+                from backend.scraper.flipkart_scraper import scrape_flipkart
                 query   = _build_search_query(user_specs, use_case)
                 laptops = run_async(scrape_flipkart(
                     query,
@@ -466,7 +464,7 @@ def api_laptop_image():
     if not name:
         return jsonify({"error": "name is required"}), 400
     try:
-        from scraper.image_fetcher import get_image
+        from backend.scraper.image_fetcher import get_image
         url = get_image(name)
         return jsonify({"image_url": url, "name": name})
     except Exception as e:

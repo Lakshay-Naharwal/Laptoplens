@@ -9,7 +9,7 @@ Async Playwright-based scraper for Flipkart laptop listings.
 
 Usage:
     import asyncio
-    from scraper.flipkart_scraper import scrape_flipkart
+    from backend.scraper.flipkart_scraper import scrape_flipkart
     results = asyncio.run(scrape_flipkart("i5 16gb laptop", max_results=10))
 """
 

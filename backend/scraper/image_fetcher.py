@@ -7,7 +7,7 @@ caches results in scraper/image_cache.json so Selenium only runs once per model.
 
 Usage:
     # In code
-    from scraper.image_fetcher import get_image
+    from backend.scraper.image_fetcher import get_image
     url = get_image("ASUS ROG Strix G15")
 
     # Pre-warm cache for all 22 mock catalogue models
