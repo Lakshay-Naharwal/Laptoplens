@@ -6,16 +6,17 @@ Endpoints:
   GET  /                    → serve React build (index.html)
   GET  /api/metadata        → form options + model stats
   POST /api/predict         → ML price prediction + confidence band
-  POST /api/recommend       → mock/live laptop recommendations
+  POST /api/recommend       → cosine-similarity + price-band laptop recommendations
+  GET  /api/laptop-image    → lazy image fetcher (Selenium, cached)
 """
 
 import os
-import json
 import pickle
 import asyncio
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -109,18 +110,6 @@ def _as_float(value, default: float, min_value: float | None = None, max_value: 
     return parsed
 
 
-def _as_int(value, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
-    """Parse an int with optional bounds, falling back to a safe default."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    if min_value is not None:
-        parsed = max(min_value, parsed)
-    if max_value is not None:
-        parsed = min(max_value, parsed)
-    return parsed
-
 
 def _as_bool(value, default: bool = False) -> bool:
     """Parse common JSON/form boolean values."""
@@ -133,7 +122,70 @@ def _as_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
-from backend.api.utils import get_cores, get_threads, get_cpu_brand, get_cpu_tier, get_cpu_gen, get_gpu_brand, get_gpu_vram
+from backend.api.utils import get_cpu_brand, get_cpu_tier, get_gpu_brand, get_gpu_vram
+
+# ─── Spec normalisation constants (used for cosine similarity) ────────────────
+# Upper bounds for each continuous feature — used to scale values to [0, 1].
+_NORM = {
+    "ram":     128.0,
+    "rom":     8192.0,
+    "display": 18.0,
+    "res_w":   3840.0,
+    "res_h":   2160.0,
+    "warranty": 5.0,
+}
+
+# CPU tier → ordinal score (higher = more powerful)
+_CPU_TIER_SCORE = {
+    "Core i9": 1.0, "Core ultra 9": 1.0,
+    "Core i7": 0.8, "Core ultra 7": 0.85,
+    "Core i5": 0.6, "Core ultra 5": 0.65,
+    "Ryzen 9": 1.0, "Ryzen 7": 0.8, "Ryzen 5": 0.6,
+    "M3": 0.95, "M2": 0.85, "M1": 0.75,
+    "Core i3": 0.35, "Ryzen 3": 0.35,
+    "Celeron": 0.15, "Pentium": 0.15, "Athlon": 0.15,
+    "Other": 0.3,
+}
+
+
+def _build_spec_vector(ram: float, rom: float, display: float, res_w: float,
+                       res_h: float, warranty: float, cpu_tier: str,
+                       is_dedicated: bool, is_apple: bool) -> np.ndarray:
+    """
+    Build a normalised spec feature vector for cosine-similarity computation.
+
+    Dimensions (9):
+      0 – RAM (normalised to 128 GB max)
+      1 – ROM / storage (normalised to 8192 GB max)
+      2 – display size (normalised to 18" max)
+      3 – resolution width (normalised to 3840 max)
+      4 – resolution height (normalised to 2160 max)
+      5 – warranty (normalised to 5 years max)
+      6 – CPU tier ordinal score (0–1)
+      7 – dedicated GPU flag (0 or 1)
+      8 – Apple Silicon GPU flag (0 or 1)
+    """
+    return np.array([
+        min(ram,     _NORM["ram"])     / _NORM["ram"],
+        min(rom,     _NORM["rom"])     / _NORM["rom"],
+        min(display, _NORM["display"]) / _NORM["display"],
+        min(res_w,   _NORM["res_w"])   / _NORM["res_w"],
+        min(res_h,   _NORM["res_h"])   / _NORM["res_h"],
+        min(warranty,_NORM["warranty"])/ _NORM["warranty"],
+        _CPU_TIER_SCORE.get(cpu_tier, 0.3),
+        1.0 if is_dedicated else 0.0,
+        1.0 if is_apple else 0.0,
+    ], dtype=float)
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Return cosine similarity in [0, 1] between two non-zero vectors."""
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if denom == 0.0:
+        return 0.0
+    return float(np.clip(np.dot(a, b) / denom, 0.0, 1.0))
+
+
 def _recommend_from_real_data(
     predicted_price: float,
     confidence_band: float,
@@ -142,9 +194,17 @@ def _recommend_from_real_data(
     count: int = 12,
 ) -> list[dict]:
     """
-    Pull laptop recommendations directly from data_real.csv.
-    image_url and buy_url come from the scraper — guaranteed to match each laptop.
-    Returns empty list if no real data is loaded.
+    Pull laptop recommendations from data_real.csv using a hybrid scoring approach:
+
+    1. Hard filters  — use-case-specific GPU/CPU constraints applied first.
+    2. Cosine similarity — spec vector (RAM, ROM, display, resolution, warranty,
+       CPU tier, GPU type) normalised to [0,1] and compared against the user query
+       vector via cosine similarity.
+    3. Price proximity — absolute distance from the predicted price, scaled 0–1.
+    4. Final match_score = round((cosine_sim * 0.70 + price_score * 0.30) * 100).
+
+    image_url and buy_url come from the scraper CSV — no extra network calls needed.
+    Returns an empty list if no real data is loaded.
     """
     import hashlib
 
@@ -152,6 +212,32 @@ def _recommend_from_real_data(
         return []
 
     use_case_kws = USE_CASE_KEYWORDS.get(use_case, [])
+
+    # ── Build the user query spec vector ────────────────────────────────────
+    user_ram      = float(user_specs.get("ram", 8.0))
+    gpu_pref      = user_specs.get("gpu_type", "integrated").lower()
+    user_cpu_tier = user_specs.get("cpu_tier", "Other")
+    user_is_dedicated = gpu_pref == "dedicated"
+    user_is_apple     = user_cpu_tier in ("M1", "M2", "M3")
+
+    # For continuous fields not directly in user_specs, use sensible defaults
+    # (the user's form provides Ram; the rest we infer from use-case context)
+    user_rom     = 512.0 if use_case not in ("Gaming", "Design") else 1024.0
+    user_display = 15.6
+    user_res_w   = 1920.0
+    user_res_h   = 1080.0
+    user_warranty= 1.0
+
+    query_vec = _build_spec_vector(
+        ram=user_ram, rom=user_rom, display=user_display,
+        res_w=user_res_w, res_h=user_res_h, warranty=user_warranty,
+        cpu_tier=user_cpu_tier,
+        is_dedicated=user_is_dedicated,
+        is_apple=user_is_apple,
+    )
+
+    # Max price delta across the dataset — used to normalise price proximity
+    max_price_delta = max(predicted_price * 2, confidence_band * 4, 1.0)
 
     candidates = []
     for row in _real_laptops:
@@ -162,53 +248,52 @@ def _recommend_from_real_data(
         name  = str(row.get("name", ""))
         lower = name.lower()
 
-        # Use-case keyword filter
+        # ── Use-case keyword pre-filter ───────────────────────────────────
         if use_case and use_case_kws and use_case != "General":
             if not any(kw in lower for kw in use_case_kws):
                 continue
 
-        # Match score calculation
-        price_delta = abs(price - predicted_price)
-        price_score = max(0, 40 - int(price_delta / 500))
-
-        gpu_raw = str(row.get("GPU", ""))
+        # ── Derived GPU / CPU features ────────────────────────────────────
+        gpu_raw   = str(row.get("GPU", ""))
         gpu_brand = get_gpu_brand(gpu_raw)
-        gpu_vram = get_gpu_vram(gpu_raw)
-        is_dedicated = gpu_vram > 0 or gpu_brand == 'NVIDIA'
-        is_apple = gpu_brand == 'Apple'
+        gpu_vram  = get_gpu_vram(gpu_raw)
+        is_dedicated       = gpu_vram > 0 or gpu_brand == "NVIDIA"
+        is_apple           = gpu_brand == "Apple"
         is_basic_integrated = not is_dedicated and not is_apple
 
-        # Use case logic using engineered features
-        if use_case == "Office" and is_dedicated:
-            continue
-        if use_case == "Gaming" and not is_dedicated:
-            continue
-        if use_case == "Design" and is_basic_integrated:
-            continue
-        
-        cpu_raw = str(row.get("processor", ""))
+        cpu_raw  = str(row.get("processor", ""))
         cpu_tier = get_cpu_tier(cpu_raw)
         is_entry_cpu = cpu_tier in ["Core i3", "Ryzen 3", "Celeron", "Pentium", "Athlon"]
-        if use_case == "Programming" and is_entry_cpu:
-            continue
-        
-        # Scoring based on user preferences
-        gpu_pref = user_specs.get("gpu_type", "integrated").lower()
-        if gpu_pref == "dedicated" and is_dedicated:
-            gpu_score = 30
-        elif gpu_pref == "integrated" and (is_basic_integrated or is_apple):
-            gpu_score = 30
-        else:
-            gpu_score = 5
 
-        ram_val   = float(row.get("Ram", 0))
-        user_ram  = float(user_specs.get("ram", 0))
-        ram_score = 20 if (user_ram and ram_val >= user_ram) else (10 if ram_val >= user_ram // 2 else 0)
+        # ── Hard use-case filters (must-pass) ─────────────────────────────
+        if use_case == "Office"      and is_dedicated:        continue
+        if use_case == "Gaming"      and not is_dedicated:    continue
+        if use_case == "Design"      and is_basic_integrated: continue
+        if use_case == "Programming" and is_entry_cpu:        continue
 
-        brand_score = 10 if user_specs.get("brand") == row.get("brand") else 0
-        cpu_score   = 10 if user_specs.get("cpu_tier") == cpu_tier else 0
+        # ── Cosine similarity (spec match) ────────────────────────────────
+        ram_val     = float(row.get("Ram", 8.0))
+        rom_val     = float(row.get("ROM", 512.0))
+        disp_val    = float(row.get("display_size", 15.6))
+        res_w_val   = float(row.get("resolution_width", 1920.0))
+        res_h_val   = float(row.get("resolution_height", 1080.0))
+        warranty_val= float(row.get("warranty", 1.0))
 
-        match_score = min(price_score + gpu_score + ram_score + brand_score + cpu_score, 100)
+        candidate_vec = _build_spec_vector(
+            ram=ram_val, rom=rom_val, display=disp_val,
+            res_w=res_w_val, res_h=res_h_val, warranty=warranty_val,
+            cpu_tier=cpu_tier,
+            is_dedicated=is_dedicated,
+            is_apple=is_apple,
+        )
+        cosine_sim = _cosine_similarity(query_vec, candidate_vec)
+
+        # ── Price proximity score (0–1, higher = closer to predicted) ─────
+        price_delta   = price - predicted_price
+        price_prox    = max(0.0, 1.0 - abs(price_delta) / max_price_delta)
+
+        # ── Hybrid match score (cosine 70% + price proximity 30%) ─────────
+        match_score = round((cosine_sim * 0.70 + price_prox * 0.30) * 100)
 
         pid = hashlib.md5(name.lower().encode()).hexdigest()[:12]
         candidates.append({
@@ -217,16 +302,16 @@ def _recommend_from_real_data(
             "brand":       str(row.get("brand", "")),
             "cpu":         cpu_raw,
             "gpu":         gpu_raw,
-            "ram":         f"{int(float(row.get('Ram', 8)))}GB {row.get('Ram_type','DDR4')}",
-            "storage":     f"{int(float(row.get('ROM', 512)))}GB {row.get('ROM_type','SSD')}",
-            "display":     f"{row.get('display_size', 15.6)}\" FHD",
+            "ram":         f"{int(ram_val)}GB {row.get('Ram_type', 'DDR4')}",
+            "storage":     f"{int(rom_val)}GB {row.get('ROM_type', 'SSD')}",
+            "display":     f"{disp_val}\" {int(res_w_val)}×{int(res_h_val)}",
             "price":       price,
             "seller":      str(row.get("source", "scraped")).title(),
             "source":      str(row.get("source", "scraped")),
             "buy_url":     str(row.get("buy_url", "") or ""),
             "image_url":   str(row.get("image_url", "") or ""),
-            "in_band":     price_delta <= confidence_band,
-            "price_delta": round(price - predicted_price, 2),
+            "in_band":     abs(price_delta) <= confidence_band,
+            "price_delta": round(price_delta, 2),
             "match_score": match_score,
             "use_cases":   [use_case] if use_case else [],
         })
@@ -234,7 +319,7 @@ def _recommend_from_real_data(
     if not candidates:
         return []
 
-    # Soft sort: in-range first, then by score desc, then by price proximity
+    # Soft sort: in-range first, then by cosine-based match_score desc, then price proximity
     candidates.sort(key=lambda x: (not x["in_band"], -x["match_score"], abs(x["price_delta"])))
     return candidates[:count]
 
@@ -243,15 +328,10 @@ def _recommend_from_real_data(
 def run_async(coro):
     """Execute an async coroutine from a synchronous Flask route."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, coro)
-                return future.result()
+        loop = asyncio.new_event_loop()
         return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+    finally:
+        loop.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -308,12 +388,26 @@ def api_predict():
         data = _json_body()
 
         # ── Build feature dict ──────────────────────────────────────────────
+        # Safe bounds for numerical features to prevent garbage predictions
+        NUM_BOUNDS = {
+            "Ram": (1.0, 128.0),
+            "ROM": (32.0, 8192.0),
+            "display_size": (10.0, 18.0),
+            "resolution_width": (800.0, 7680.0),
+            "resolution_height": (600.0, 4320.0),
+            "warranty": (0.0, 5.0),
+        }
         inputs = {}
         for col in metadata["categorical_cols"]:
-            inputs[col] = str(data.get(col, ""))
+            val = data.get(col, "")
+            # Reject completely empty categorical values
+            if val is None or str(val).strip() == "":
+                return jsonify({"error": f"Missing required field: {col}"}), 400
+            inputs[col] = str(val)
 
         for col in metadata["numerical_cols"]:
-            inputs[col] = _as_float(data.get(col), 0.0)
+            lo, hi = NUM_BOUNDS.get(col, (0.0, float("inf")))
+            inputs[col] = _as_float(data.get(col), lo, lo, hi)
 
         input_df = pd.DataFrame([inputs])
 
@@ -401,9 +495,12 @@ def api_recommend():
                     predicted_price=predicted_price,
                     confidence_band=confidence_band,
                 ))
-                source = "live"
+                if laptops:
+                    source = "live"
+                else:
+                    logger.info("Live scraper returned no results. Falling back.\n")
             except Exception as e:
-                logger.warning(f"Live scraper failed, falling back to mock: {e}")
+                logger.warning(f"Live scraper failed, falling back to cached data: {e}")
 
         # ── Real scraped data (primary source) ──────────────────────────────
         if not laptops and _real_laptops:
@@ -416,6 +513,8 @@ def api_recommend():
             )
             if laptops:
                 source = "real"
+            else:
+                logger.info("No matching real data found. Falling back to mock data.\n")
 
         # ── Mock fallback (when no real data available) ──────────────────────
         if not laptops:
@@ -425,9 +524,7 @@ def api_recommend():
                 user_specs=user_specs,
                 count=12,
             )
-            source = "mock"
-
-
+            source = "mock"  # Corrects source label when use_live=True but all scrapers/data failed
         # ── Soft-sort: closest to predicted price first; in-band laptops float up ────────
         for laptop in laptops:
             laptop["price_delta"] = round(laptop["price"] - predicted_price, 2)

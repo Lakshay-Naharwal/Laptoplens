@@ -67,5 +67,13 @@ def get_gpu_brand(val):
     return 'Other'
 
 def get_gpu_vram(val):
-    match = re.search(r'(\d+)gb', str(val).lower())
+    v = str(val).lower()
+    # Only match VRAM if the string contains a dedicated GPU keyword
+    has_dedicated = any(k in v for k in ['rtx', 'gtx', 'geforce', 'radeon rx', 'arc', 'quadro', 'mx'])
+    if not has_dedicated:
+        # Apple GPUs have integrated VRAM but are distinct
+        if any(k in v for k in ['apple', 'm1', 'm2', 'm3']):
+            return 0.0  # Apple integrated GPU — no discrete VRAM
+        return 0.0
+    match = re.search(r'(\d+)\s*gb', v)
     return float(match.group(1)) if match else 0.0

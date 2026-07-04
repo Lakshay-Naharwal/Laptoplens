@@ -4,7 +4,6 @@
  *  - Real product image (lazy-loaded from /api/laptop-image with skeleton shimmer)
  *  - Color-coded match score bar
  *  - Price vs. prediction band comparison badge (soft filter: in/out of range)
- *  - "Check Price History" button
  */
 
 import { useState, useEffect } from "react";
