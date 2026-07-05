@@ -6,6 +6,8 @@ from sklearn.metrics import r2_score, mean_absolute_error
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor, VotingRegressor
+from sklearn.linear_model import Ridge
 import pickle
 import os
 import argparse
@@ -28,104 +30,16 @@ print(f"Training source: {data_path}")
 df = pd.read_csv(data_path)
 
 # ─── 2. Preprocessing ─────────────────────────────────────────────────────────
-import re
+from data_cleaning import clean_laptop_data
+df = clean_laptop_data(df)
 
-def extract_number(val):
-    """Pull the first numeric substring from a value (e.g. '8GB' → 8.0)."""
-    try:
-        digits = "".join(filter(lambda c: c.isdigit() or c == ".", str(val)))
-        return float(digits) if digits else 0.0
-    except Exception:
-        return 0.0
+# ─── 3. Features & Target / 4. Preprocessing / 4.5 Feature-Based Outlier Removal 
+from data_cleaning import prepare_training_data
+X, y, preprocessor, df, categorical_cols, numerical_cols = prepare_training_data(df)
 
-def clean_rom(val):
-    """Normalise storage to GB (TB values × 1024)."""
-    val = str(val).upper()
-    num = extract_number(val)
-    return num * 1024 if "TB" in val else num
-
-import sys
-sys.path.append(os.path.join(script_dir, ".."))
-from api.utils import get_cores, get_threads, get_cpu_brand, get_cpu_tier, get_cpu_gen, get_gpu_brand, get_gpu_vram
-
-# Initial cleaning
-def clean_os(val):
-    val = str(val).upper()
-    if '11' in val and 'WINDOWS' in val: return 'Windows 11'
-    if '10' in val and 'WINDOWS' in val: return 'Windows 10'
-    if 'WINDOWS' in val: return 'Windows'
-    if 'MAC' in val: return 'macOS'
-    if 'CHROME' in val: return 'ChromeOS'
-    if 'UBUNTU' in val: return 'Ubuntu'
-    if 'DOS' in val: return 'DOS'
-    if 'ANDROID' in val: return 'Android'
-    return val.strip().title()
-
-def clean_gpu(val):
-    import re
-    val = str(val).strip().upper()
-    for word in ['GRAPHICS', 'GRAPHIC', 'GRAPHIICS', 'INTEGRATED', 'GEFORCE', '']:
-        val = val.replace(word, '')
-    val = ' '.join(val.split())
-    
-    val = val.replace('NVIDIA', 'NVIDIA').replace('AMD', 'AMD').replace('INTEL', 'Intel').replace('APPLE', 'Apple')
-    val = val.replace('RTX', 'RTX ').replace('GTX', 'GTX ').replace('RX', 'RX ')
-    val = val.replace('UHD', 'UHD').replace('IRIS XE', 'Iris Xe').replace('IRIS X', 'Iris Xe')
-    
-    val = re.sub(r'(RTX|GTX|RX)(\d)', r'\1 \2', val)
-    
-    words = val.split()
-    unique_words = []
-    for w in words:
-        if w not in unique_words and w != 'GB':
-            unique_words.append(w)
-    val = ' '.join(unique_words)
-    
-    m = re.search(r'(\d+)\s*GB', val, flags=re.IGNORECASE)
-    if m:
-        vram = m.group(1) + 'GB'
-        val = re.sub(r'\d+\s*GB', '', val, flags=re.IGNORECASE)
-        val = val.strip() + ' ' + vram
-        
-    return val if val else 'Other'
-
-df["Ram"] = df["Ram"].apply(extract_number)
-df["ROM"] = df["ROM"].apply(clean_rom)
-df["OS"] = df["OS"].apply(clean_os)
-df["GPU"] = df["GPU"].apply(clean_gpu)
-df["price"] = pd.to_numeric(df["price"], errors="coerce")
-df = df.dropna(subset=["price"])
-df = df[(df["price"] >= 10000) & (df["price"] <= 500000)]
-
-# ─── 3. Features & Target ─────────────────────────────────────────────────────
-categorical_cols = ["brand", "processor", "Ram_type", "ROM_type", "GPU", "OS"]
-numerical_cols = [
-    "Ram",
-    "ROM",
-    "display_size",
-    "resolution_width",
-    "resolution_height",
-    "warranty",
-]
-
-# Keep only columns that actually exist in the CSV
-categorical_cols = [c for c in categorical_cols if c in df.columns]
-numerical_cols = [c for c in numerical_cols if c in df.columns]
-
-X = df[categorical_cols + numerical_cols]
-y = df["price"]
-
-# ─── 4. Preprocessing Pipeline ────────────────────────────────────────────────
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), numerical_cols),
-        (
-            "cat",
-            OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-            categorical_cols,
-        ),
-    ]
-)
+# ─── 4.7 Monotonic Constraints ──────────────────────────────────────────────────
+preprocessor.set_output(transform="pandas")
+monotone_constraints = {"num__Ram": 1, "num__ROM": 1}
 
 # ─── 5. Model Pipeline ────────────────────────────────────────────────────────
 feature_pipeline = Pipeline(
@@ -133,14 +47,25 @@ feature_pipeline = Pipeline(
         ("preprocessor", preprocessor),
         (
             "regressor",
-            xgb.XGBRegressor(
-                n_estimators=1000,
-                learning_rate=0.05,
-                max_depth=6,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                verbosity=0,
+            VotingRegressor(
+                estimators=[
+                    (
+                        "xgb", 
+                        xgb.XGBRegressor(
+                            n_estimators=500, 
+                            learning_rate=0.05, 
+                            max_depth=7, 
+                            random_state=42, 
+                            n_jobs=-1,
+                            monotone_constraints=monotone_constraints
+                        )
+                    ),
+                    (
+                        "ridge", 
+                        Ridge(alpha=10.0)
+                    )
+                ],
+                weights=[0.8, 0.2]
             ),
         ),
     ]
@@ -191,7 +116,7 @@ print(f"Final Model (trained on all data) will use CV MAE as default confidence 
 fitted_pipeline = model_pipeline.regressor_
 feature_names = fitted_pipeline.named_steps["preprocessor"].get_feature_names_out()
 feature_names = [name.split("__", 1)[-1] for name in feature_names]
-importances = fitted_pipeline.named_steps["regressor"].feature_importances_
+importances = fitted_pipeline.named_steps["regressor"].estimators_[0].feature_importances_
 raw_importance = dict(zip(feature_names, importances.tolist()))
 feature_importance = {}
 for name, importance in raw_importance.items():

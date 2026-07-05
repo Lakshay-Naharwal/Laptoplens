@@ -226,4 +226,11 @@ frontend/dist/
 price_history.db
 price_history.db-shm
 price_history.db-wal
-scraper/image_cache.json
+backend/scraper/image_cache.json
+
+# Scratchpad/temporary files
+scratch/
+test_*.py
+
+# AI Agent Configs
+.agents/

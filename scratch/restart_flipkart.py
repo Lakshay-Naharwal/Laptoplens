@@ -4,7 +4,7 @@ from pathlib import Path
 # Add backend to path
 sys.path.append(str(Path(__file__).parent.parent.parent / "backend"))
 
-from scraper. amazon_flipkart_scraper import scrape_flipkart, FK_QUERIES
+from scraper.amazon_flipkart_scraper import scrape_flipkart, FK_QUERIES
 
 # 14 is the index of 'macbook pro m3'
 remaining_queries = FK_QUERIES[14:]

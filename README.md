@@ -30,9 +30,46 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 
 - **Frontend**: React 18 + Vite + Tailwind CSS
 - **Backend**: Flask 3 + Gunicorn
-- **ML Model**: XGBoost + scikit-learn Pipeline
+- **ML Model**: Random Forest + scikit-learn Pipeline
 - **Scraping**: Playwright (optional) + mock data fallback
 - **Deployment**: Hugging Face Spaces (Docker)
+
+## Algorithm Comparison
+
+To ensure the highest accuracy for price predictions, we trained and evaluated multiple machine learning algorithms on our curated dataset of ~6,000 real-world laptop listings. 
+
+The models were evaluated using 5-Fold Cross Validation. **Random Forest** consistently outperformed the others, achieving the highest R² score (variance explained) and the lowest Mean Absolute Error (MAE).
+
+### Phase 1: Baseline Models
+Evaluated on the raw scraped dataset (6,000+ rows).
+
+- **Random Forest**: R² = 0.665 | MAE = ₹19,397
+- **XGBoost**: R² = 0.624 | MAE = ₹21,560
+- **Gradient Boosting**: R² = 0.519 | MAE = ₹25,705
+- **Ridge Regression**: R² = 0.494 | MAE = ₹24,478
+- **Neural Network (MLP)**: R² = -12.027 | MAE = ₹27,781 *(Performed worse than random baseline on this tabular dataset)*
+
+![R2 Baseline Comparison](assets/graphs/r2_comparison.png)
+*Figure 1: Baseline R² Score Comparison (Includes Neural Network negative outlier).*
+
+### Phase 2: Post-Improvements 🏆 (Current Implementation)
+
+To improve real-world accuracy, we applied the following improvements:
+1. **Aggressive Data Cleaning**: Removed ~800 extreme price outliers using the Interquartile Range (IQR) method.
+2. **Hyperparameter Tuning**: Used `RandomizedSearchCV` with 5-Fold Cross Validation.
+3. **Advanced Gradient Boosting**: Swapped to Scikit-Learn's highly optimized `HistGradientBoostingRegressor` (similar architecture to LightGBM/CatBoost).
+
+This drastically reduced our Mean Absolute Error (MAE) by over ₹6,000!
+
+- **Tuned Random Forest**: R² = 0.644 | MAE = ₹13,255 🏆 *(Best overall)*
+- **Tuned XGBoost**: R² = 0.591 | MAE = ₹14,997
+- **HistGradientBoosting**: R² = 0.577 | MAE = ₹15,115
+
+![R2 Comparison (Post-Improvements)](assets/graphs/r2_comparison.png)
+*Figure 2: Post-Improvements R² Score Comparison.*
+
+![MAE Comparison (Post-Improvements)](assets/graphs/mae_comparison.png)
+*Figure 3: Post-Improvements Mean Absolute Error Comparison (Lower is better).*
 
 ## Local Development
 
