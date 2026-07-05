@@ -152,21 +152,40 @@ model_pipeline = TransformedTargetRegressor(
     inverse_func=np.expm1,
 )
 
-# ─── 6. Train / Test Split ────────────────────────────────────────────────────
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+# ─── 6. Train / Test Split & K-Fold Evaluation ────────────────────────────────
+from sklearn.model_selection import KFold
+import numpy as np
 
-# ─── 7. Train ─────────────────────────────────────────────────────────────────
-print("Training model…")
-model_pipeline.fit(X_train, y_train)
+print("Running K-Fold Cross Validation (5 folds)…")
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+cv_r2_scores = []
+cv_mae_scores = []
+
+for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
+    X_train_cv, X_test_cv = X.iloc[train_idx], X.iloc[test_idx]
+    y_train_cv, y_test_cv = y.iloc[train_idx], y.iloc[test_idx]
+    
+    model_pipeline.fit(X_train_cv, y_train_cv)
+    y_pred_cv = model_pipeline.predict(X_test_cv)
+    
+    cv_r2_scores.append(r2_score(y_test_cv, y_pred_cv))
+    cv_mae_scores.append(mean_absolute_error(y_test_cv, y_pred_cv))
+    print(f"  Fold {fold+1}: R² = {cv_r2_scores[-1]:.4f}, MAE = ₹{cv_mae_scores[-1]:,.2f}")
+
+print(f"\n--- Cross-Validation Results ---")
+print(f"Mean R²:  {np.mean(cv_r2_scores):.4f} (±{np.std(cv_r2_scores):.4f})")
+print(f"Mean MAE: ₹{np.mean(cv_mae_scores):,.2f} (±₹{np.std(cv_mae_scores):,.2f})")
+print(f"--------------------------------\n")
+
+# ─── 7. Train Final Model on All Data ─────────────────────────────────────────
+print("Training final model on all data…")
+model_pipeline.fit(X, y)
 
 # ─── 8. Evaluate ──────────────────────────────────────────────────────────────
-y_pred = model_pipeline.predict(X_test)
-r2 = r2_score(y_test, y_pred)
-mae = mean_absolute_error(y_test, y_pred)
-print(f"R²  Score : {r2:.4f}")
-print(f"MAE (INR) : ₹{mae:,.2f}  ← used as default confidence band")
+# We use the mean MAE and R2 from CV for metadata
+r2 = float(np.mean(cv_r2_scores))
+mae = float(np.mean(cv_mae_scores))
+print(f"Final Model (trained on all data) will use CV MAE as default confidence band: ±₹{mae:,.2f}")
 
 # ─── 9. Feature Importance (for UI explanations) ──────────────────────────────
 fitted_pipeline = model_pipeline.regressor_

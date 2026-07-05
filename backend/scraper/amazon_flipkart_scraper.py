@@ -55,6 +55,41 @@ AMAZON_QUERIES = [
     "nvidia rtx laptop",
     "thin light laptop",
     "budget laptop",
+    # --- Targeted Gap Fillers ---
+    "intel core ultra 9 laptop",
+    "intel core ultra 7 laptop",
+    "intel core ultra 5 laptop",
+    "intel core i9 laptop",
+    "intel core i3 laptop",
+    "amd ryzen 9 laptop",
+    "amd ryzen 3 laptop",
+    "apple macbook",
+    "macbook pro m3",
+    "macbook air m2",
+    "macbook pro m2",
+    "macbook m1",
+    "workstation laptop",
+    "creator laptop",
+    "developer laptop",
+    "student laptop",
+    "32gb ram laptop",
+    "64gb ram laptop",
+    "16gb ram laptop",
+    "budget laptop under 30000",
+    "budget laptop under 40000",
+    "premium laptop",
+    "touchscreen laptop",
+    "2-in-1 laptop",
+    "oled laptop",
+    "asus zenbook",
+    "dell xps",
+    "hp spectre",
+    "lenovo thinkpad",
+    "asus proart",
+    "asus vivobook",
+    "hp pavilion",
+    "acer swift",
+    "msi prestige",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,7 +102,8 @@ def _parse_specs_from_title(title: str) -> dict:
 
     # ── Processor ────────────────────────────────────────────────────────────
     proc_patterns = [
-        r"intel core ultra\s*\d+\w*",
+        r"intel\s+core\s+ultra\s*\d+\w*",
+        r"core\s+ultra\s*\d+\w*",
         r"intel core\s*i[3579][-\s]\d+\w*",
         r"intel core\s*i[3579]\s+\d+\w*",   # "i5 13420H"
         r"amd ryzen\s*[3579]\s*\d+\w*",
@@ -130,12 +166,28 @@ def _parse_specs_from_title(title: str) -> dict:
         r"intel uhd graphics",
         r"apple m[123]",
     ]
-    gpu = "Intel Iris Xe"
+    gpu = None
     for pat in gpu_patterns:
         m = re.search(pat, t)
         if m:
             gpu = m.group(0).strip().title()
             break
+            
+    if not gpu:
+        # If it's explicitly a gaming laptop, defaulting to Iris Xe poisons the data with 3-Lakh "integrated" GPUs.
+        # Fallback to RTX 4060 for gaming laptops, otherwise Iris Xe.
+        gaming_keywords = ["gaming", "rog", "legion", "predator", "alienware", "omen", "tuf", "loq", "nitro", "victus", "ideapad gaming"]
+        if any(kw in t for kw in gaming_keywords):
+            gpu = "Nvidia Rtx 4060"
+        else:
+            gpu = "Intel Iris Xe"
+            
+    # Default integrated GPU logic based on CPU if no specific GPU mentioned
+    if gpu == "Intel Iris Xe" or gpu == "Intel Uhd Graphics":
+        if "amd" in t and "ryzen" in t:
+            gpu = "AMD Radeon FHD"
+        elif "apple" in t or re.search(r"\bm[123]\b", t):
+            gpu = "Apple M-series GPU"
 
     # ── OS ───────────────────────────────────────────────────────────────────
     if "macos" in t or "mac os" in t:
@@ -224,8 +276,21 @@ def _build_driver(headless: bool = True) -> webdriver.Chrome:
     )
     opts.add_argument("--window-size=1366,768")
     opts.add_argument("--lang=en-IN")
-    service = Service(ChromeDriverManager().install())
-    driver  = webdriver.Chrome(service=service, options=opts)
+    import os
+    driver_path = r"C:\Users\Asus\.wdm\drivers\chromedriver\win64\149.0.7827.155\chromedriver.exe"
+    
+    try:
+        if os.path.exists(driver_path):
+            service = Service(driver_path)
+        else:
+            service = Service(ChromeDriverManager().install())
+        driver  = webdriver.Chrome(service=service, options=opts)
+    except Exception as e:
+        log.error(f"Failed to initialize driver: {e}")
+        # Try raw installation if cached fails
+        service = Service(ChromeDriverManager().install())
+        driver  = webdriver.Chrome(service=service, options=opts)
+        
     driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
     return driver
 
@@ -288,9 +353,10 @@ def _parse_amazon_card(card_html: str) -> dict | None:
     }
 
 
-def scrape_amazon(driver: webdriver.Chrome, pages: int, queries: list[str]) -> list[dict]:
+def scrape_amazon(headless: bool, pages: int, queries: list[str]) -> list[dict]:
     results = []
     seen    = set()
+    driver = _build_driver(headless=headless)
 
     for query in queries:
         log.info(f"\n[Amazon] Query: '{query}' ({pages} pages)")
@@ -307,20 +373,34 @@ def scrape_amazon(driver: webdriver.Chrome, pages: int, queries: list[str]) -> l
                 soup  = BeautifulSoup(driver.page_source, "lxml")
                 cards = soup.select("div[data-component-type='s-search-result']")
                 new   = 0
+                page_results = []
                 for card in cards:
                     parsed = _parse_amazon_card(str(card))
                     if parsed:
                         key = hashlib.md5(parsed["name"].lower().encode()).hexdigest()
                         if key not in seen:
                             seen.add(key)
-                            results.append(parsed)
+                            page_results.append(parsed)
                             new += 1
-                log.info(f"  p{page}: +{new} new (total {len(results)})")
+                results.extend(page_results)
+                
+                if page_results:
+                    total = save_csv(page_results, OUT_CSV)
+                    log.info(f"  p{page}: +{new} new (Session total: {len(results)}, DB total: {total})")
+                else:
+                    log.info(f"  p{page}: 0 new")
             except Exception as e:
                 log.warning(f"  p{page} failed: {e}")
                 _sleep(3, 6)
+                if "invalid session id" in str(e).lower() or "disconnected" in str(e).lower() or "target window already closed" in str(e).lower() or "not reachable" in str(e).lower() or "gethandleverifier" in str(e).lower() or "read timed out" in str(e).lower():
+                    log.warning("Driver appears dead. Rebuilding driver...")
+                    try: driver.quit()
+                    except: pass
+                    _sleep(5, 10)
+                    driver = _build_driver(headless=headless)
 
-    log.info(f"[Amazon] Done: {len(results)} unique listings")
+    driver.quit()
+    log.info(f"[Amazon] Done: {len(results)} unique listings added this session")
     return results
 
 
@@ -337,6 +417,33 @@ FK_QUERIES = [
     "i5 laptop",
     "ryzen 5 laptop",
     "ryzen 7 laptop",
+    "core ultra 9 laptop",
+    "core ultra 7 laptop",
+    "core ultra 5 laptop",
+    "core i9 laptop",
+    "core i7 laptop",
+    "core i3 laptop",
+    "ryzen 9 laptop",
+    "ryzen 3 laptop",
+    "apple macbook",
+    "macbook pro m3",
+    "macbook air m2",
+    "32gb ram laptop",
+    "64gb ram laptop",
+    "16gb ram laptop",
+    "creator laptop",
+    "student laptop",
+    "office laptop",
+    "budget laptop under 30000",
+    "budget laptop under 40000",
+    "thin and light laptop",
+    "touchscreen laptop",
+    "oled laptop",
+    "asus zenbook",
+    "dell xps",
+    "hp spectre",
+    "lenovo thinkpad",
+    "asus proart",
 ]
 
 def _parse_flipkart_card(card_html: str) -> dict | None:
@@ -389,9 +496,11 @@ def _parse_flipkart_card(card_html: str) -> dict | None:
             "image_url": image_url, "buy_url": buy_url, "source": "flipkart", **specs}
 
 
-def scrape_flipkart(driver: webdriver.Chrome, pages: int, queries: list[str]) -> list[dict]:
+def scrape_flipkart(headless: bool, pages: int, queries: list[str]) -> list[dict]:
     results = []
     seen    = set()
+    driver = _build_driver(headless=headless)
+    
     log.info("[Flipkart] Testing headless access …")
     try:
         driver.get(_FK_BASE + "/search?q=laptop")
@@ -399,10 +508,12 @@ def scrape_flipkart(driver: webdriver.Chrome, pages: int, queries: list[str]) ->
         cards_test = driver.find_elements(By.CSS_SELECTOR, "div[data-id]")
         if not cards_test:
             log.warning("[Flipkart] 0 cards found — blocked. Skipping.")
+            driver.quit()
             return []
         log.info(f"[Flipkart] Access OK ({len(cards_test)} cards on test page)")
     except Exception as e:
         log.warning(f"[Flipkart] Access test failed: {e}. Skipping.")
+        driver.quit()
         return []
 
     for qi, query in enumerate(queries):
@@ -419,26 +530,42 @@ def scrape_flipkart(driver: webdriver.Chrome, pages: int, queries: list[str]) ->
                 soup  = BeautifulSoup(driver.page_source, "lxml")
                 cards = soup.select("div[data-id]")
                 new   = 0
+                page_results = []
                 for card in cards:
                     parsed = _parse_flipkart_card(str(card))
                     if parsed:
                         key = hashlib.md5(parsed["name"].lower().encode()).hexdigest()
                         if key not in seen:
                             seen.add(key)
-                            results.append(parsed)
+                            page_results.append(parsed)
                             new += 1
                 query_results += new
-                log.info(f"  p{page}: +{new} new (total {len(results)})")
+                results.extend(page_results)
+                
+                if page_results:
+                    total = save_csv(page_results, OUT_CSV)
+                    log.info(f"  p{page}: +{new} new (Session total: {len(results)}, DB total: {total})")
+                else:
+                    log.info(f"  p{page}: 0 new")
             except Exception as e:
                 log.warning(f"  p{page} failed: {e}")
                 _sleep(3, 6)
+                # If driver crashed completely (e.g. invalid session id), try to rebuild it
+                if "invalid session id" in str(e).lower() or "disconnected" in str(e).lower() or "target window already closed" in str(e).lower() or "not reachable" in str(e).lower() or "gethandleverifier" in str(e).lower() or "read timed out" in str(e).lower():
+                    log.warning("Driver appears dead. Rebuilding driver...")
+                    try: driver.quit()
+                    except: pass
+                    _sleep(5, 10)
+                    driver = _build_driver(headless=headless)
 
         # If first query returned nothing, Flipkart is blocking — abort
         if qi == 0 and query_results == 0:
             log.warning("[Flipkart] First query returned 0 — selectors broken or blocked. Skipping all Flipkart.")
+            driver.quit()
             return results
 
-    log.info(f"[Flipkart] Done: {len(results)} unique listings")
+    driver.quit()
+    log.info(f"[Flipkart] Done: {len(results)} unique listings added this session")
     return results
 
 
@@ -447,21 +574,25 @@ def scrape_flipkart(driver: webdriver.Chrome, pages: int, queries: list[str]) ->
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_csv(rows: list[dict], path: Path) -> int:
-    existing = {}
-    if path.exists():
-        with open(path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                key = hashlib.md5(r["name"].lower().encode()).hexdigest()
-                existing[key] = r
-    for row in rows:
-        key = hashlib.md5(row["name"].lower().encode()).hexdigest()
-        existing[key] = row
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLS)
-        writer.writeheader()
-        for row in existing.values():
-            writer.writerow({col: row.get(col, "") for col in CSV_COLS})
-    return len(existing)
+    from filelock import FileLock
+    lock_path = str(path) + ".lock"
+    
+    with FileLock(lock_path, timeout=60):
+        existing = {}
+        if path.exists():
+            with open(path, newline="", encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    key = hashlib.md5(r["name"].lower().encode()).hexdigest()
+                    existing[key] = r
+        for row in rows:
+            key = hashlib.md5(row["name"].lower().encode()).hexdigest()
+            existing[key] = row
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_COLS)
+            writer.writeheader()
+            for row in existing.values():
+                writer.writerow({col: row.get(col, "") for col in CSV_COLS})
+        return len(existing)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,19 +607,16 @@ def main():
     parser.add_argument("--visible", action="store_true")
     args = parser.parse_args()
 
-    log.info(f"Scraper start → {args.site}, {args.pages} pages/query, headless={not args.visible}")
-    driver   = _build_driver(headless=not args.visible)
+    headless_mode = not args.visible
+    log.info(f"Scraper start → {args.site}, {args.pages} pages/query, headless={headless_mode}")
     all_rows = []
 
-    try:
-        if args.site in ("both", "flipkart"):
-            all_rows.extend(scrape_flipkart(driver, args.pages, FK_QUERIES))
-            _sleep(5, 10)
+    if args.site in ("both", "flipkart"):
+        all_rows.extend(scrape_flipkart(headless=headless_mode, pages=args.pages, queries=FK_QUERIES))
+        _sleep(5, 10)
 
-        if args.site in ("both", "amazon"):
-            all_rows.extend(scrape_amazon(driver, args.pages, AMAZON_QUERIES))
-    finally:
-        driver.quit()
+    if args.site in ("both", "amazon"):
+        all_rows.extend(scrape_amazon(headless=headless_mode, pages=args.pages, queries=AMAZON_QUERIES))
 
     if not all_rows:
         log.error("No data collected.")
