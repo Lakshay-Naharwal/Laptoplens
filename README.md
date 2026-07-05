@@ -13,6 +13,8 @@ pinned: true
 
 > Know the fair price **before** you buy.
 
+**🚀 Live Demo:** [https://laptoplens.vercel.app](https://laptoplens.vercel.app)
+
 An AI-powered platform that predicts a fair laptop price, finds matching real-time listings, and tracks price history across Indian e-commerce platforms.
 
 ## Features
