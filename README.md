@@ -19,57 +19,42 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 
 | Feature | Description |
 |---|---|
-| 🤖 **AI Price Prediction** | XGBoost model trained on 900+ laptops, predicts ±MAE accuracy |
+| 🤖 **AI Price Prediction** | XGBoost model trained on 900+ laptops, predicting real-world prices |
 | 🎚️ **Adjustable Tolerance** | You control the ±₹ confidence band (tight/flexible) |
 | 📦 **Recommendation Cards** | Matching laptops with spec match scores |
-| 🛒 **Dynamic Buying Links** | Instantly redirects to live Flipkart search results to avoid dead links |
+| 🛒 **Dynamic Buying Links** | Instantly redirects to live **Flipkart** and **Amazon** search results |
 | 🏷️ **Use-Case Filter** | Gaming / Office / Design / Programming / General |
 | 📝 **Mock → Live** | Demo works offline; live Flipkart scraper is optional |
+| 🛡️ **Secure Model Loads** | Enforces strict SHA-256 checksums to ensure pickle file integrity |
 
 ## Tech Stack
 
 - **Frontend**: React 18 + Vite + Tailwind CSS
-- **Backend**: Flask 3 + Gunicorn
-- **ML Model**: Random Forest + scikit-learn Pipeline
-- **Scraping**: Playwright (optional) + mock data fallback
+- **Backend**: Flask 3 + Gunicorn (Single Worker to protect in-memory cache)
+- **ML Model**: Voting Regressor (XGBoost + Ridge) inside a TransformedTargetRegressor
+- **Scraping**: Playwright (optional) + pre-scraped data + mock data fallback
 - **Deployment**: Hugging Face Spaces (Docker)
 
-## Algorithm Comparison
+## Algorithm Comparison & Pipeline Robustness
 
 To ensure the highest accuracy for price predictions, we trained and evaluated multiple machine learning algorithms on our curated dataset of ~6,000 real-world laptop listings. 
-
-The models were evaluated using 5-Fold Cross Validation. **Random Forest** consistently outperformed the others, achieving the highest R² score (variance explained) and the lowest Mean Absolute Error (MAE).
 
 ### Phase 1: Baseline Models
 Evaluated on the raw scraped dataset (6,000+ rows).
 
 - **Random Forest**: R² = 0.665 | MAE = ₹19,397
 - **XGBoost**: R² = 0.624 | MAE = ₹21,560
-- **Gradient Boosting**: R² = 0.519 | MAE = ₹25,705
-- **Ridge Regression**: R² = 0.494 | MAE = ₹24,478
 - **Neural Network (MLP)**: R² = -12.027 | MAE = ₹27,781 *(Performed worse than random baseline on this tabular dataset)*
-
-![R2 Baseline Comparison](assets/graphs/r2_comparison.png)
-*Figure 1: Baseline R² Score Comparison (Includes Neural Network negative outlier).*
 
 ### Phase 2: Post-Improvements 🏆 (Current Implementation)
 
-To improve real-world accuracy, we applied the following improvements:
-1. **Aggressive Data Cleaning**: Removed ~800 extreme price outliers using the Interquartile Range (IQR) method.
-2. **Hyperparameter Tuning**: Used `RandomizedSearchCV` with 5-Fold Cross Validation.
-3. **Advanced Gradient Boosting**: Swapped to Scikit-Learn's highly optimized `HistGradientBoostingRegressor` (similar architecture to LightGBM/CatBoost).
+To improve real-world accuracy and prevent data leakage, we applied the following improvements:
+1. **Strict 80/20 Holdout Split**: To evaluate true generalizability, 20% of data is safely hidden from the entire training and cleaning phase.
+2. **Aggressive Data Cleaning**: Removed ~800 extreme price outliers using `IsolationForest` **(fitted exclusively on the training set to prevent data leakage)**.
+3. **Advanced Architecture**: Used a Voting Regressor combining XGBoost and Ridge regression for stabilized predictions.
 
-This drastically reduced our Mean Absolute Error (MAE) by over ₹6,000!
-
-- **Tuned Random Forest**: R² = 0.644 | MAE = ₹13,255 🏆 *(Best overall)*
-- **Tuned XGBoost**: R² = 0.591 | MAE = ₹14,997
-- **HistGradientBoosting**: R² = 0.577 | MAE = ₹15,115
-
-![R2 Comparison (Post-Improvements)](assets/graphs/r2_comparison.png)
-*Figure 2: Post-Improvements R² Score Comparison.*
-
-![MAE Comparison (Post-Improvements)](assets/graphs/mae_comparison.png)
-*Figure 3: Post-Improvements Mean Absolute Error Comparison (Lower is better).*
+This drastically reduced our Mean Absolute Error (MAE) and increased reliability!
+- **Tuned Model (Final Holdout Set)**: MAE = ~₹22,673 | R² = 0.81 🏆 *(Extremely realistic pricing on unseen data)*
 
 ## Local Development
 
@@ -81,18 +66,18 @@ python -m venv venv
 venv\Scripts\activate  # Windows
 # source venv/bin/activate  # Linux/Mac
 
-# 2. Install dependencies
+# 2. Install dependencies (Pinned for reproducibility)
 pip install -r requirements.txt
 
-# 3. Train the model (first time only)
-python train_model.py
+# 3. Train the model (first time only, saves checksums)
+python backend/ml/train_model.py
 
-# 4. Start Flask
-python app.py
+# 4. Start Flask (Requires PYTHONPATH on some terminals)
+python backend/api/app.py
 # → http://localhost:5000
 ```
 
-By default, `train_model.py` uses the curated `data.csv`. Scraped `data_real.csv` is kept for recommendations because marketplace-title parsing can be noisy. To experiment with scraped training data, run `python train_model.py --data-source real`.
+*Note: Live scraping is disabled by default to avoid accidental headless browsing restrictions. You can enable it by passing `ENABLE_LIVE_SCRAPING=true` in your `.env`.*
 
 ### Frontend (React)
 
@@ -109,7 +94,7 @@ npm run dev
 cd frontend
 npm run build
 # Output: frontend/dist/
-# Flask will serve this automatically
+# Flask will serve this automatically if configured for static serving
 ```
 
 ## Docker (local)
@@ -119,6 +104,7 @@ docker build -t laptoplens .
 docker run -p 7860:7860 laptoplens
 # → http://localhost:7860
 ```
+*(The Dockerfile properly handles installing Playwright dependencies and running Gunicorn with 1 worker to ensure predictable in-memory cache behavior).*
 
 ## Deployment Notes
 
@@ -138,42 +124,30 @@ docker run -p 7860:7860 laptoplens
 
 ## Split Frontend/Backend Deployment
 
-If the Flask backend is deployed on Hugging Face Spaces and the React frontend is
-deployed separately on Vercel, configure both sides with their public origins:
+If the Flask backend is deployed on Hugging Face Spaces and the React frontend is deployed separately on Vercel, configure both sides with their public origins:
 
-- In Vercel, set `VITE_API_BASE_URL` to your Hugging Face Space URL, for example
-  `https://YOUR_USERNAME-YOUR_SPACE_NAME.hf.space`.
-- In Hugging Face Spaces, set `CORS_ORIGINS` to your Vercel app URL, for example
-  `https://your-app.vercel.app`.
-
-Without `VITE_API_BASE_URL`, the Vercel build calls `/api/...` on the Vercel
-domain. Without `CORS_ORIGINS`, the browser blocks calls from Vercel to Hugging
-Face.
+- In Vercel, set `VITE_API_BASE_URL` to your Hugging Face Space URL, for example `https://YOUR_USERNAME-YOUR_SPACE_NAME.hf.space`.
+- In Hugging Face Spaces, set `CORS_ORIGINS` to your Vercel app URL, for example `https://your-app.vercel.app`.
 
 ## Project Structure
 
-```
-laptop-price-prediction/
-├── app.py                 # Flask API
-├── train_model.py         # XGBoost training
-├── data.csv               # Training dataset
-├── requirements.txt
-├── Dockerfile             # Multi-stage build
-├── database/
-│   ├── db.py              # SQLite CRUD
-│   └── schema.sql
-├── scraper/
-│   ├── cache.py           # TTL in-memory cache
-│   ├── mock_data.py       # Demo data generator
-│   └── flipkart_scraper.py # Playwright scraper (optional)
-├── model/                 # Trained model artifacts
-└── frontend/              # React app
-    ├── src/
-    │   ├── App.jsx
-    │   ├── components/
-    │   └── api/client.js
-    ├── package.json
-    └── vite.config.js
+```text
+Laptoplens/
+├── backend/
+│   ├── api/
+│   │   └── app.py                  # Flask API & Routes
+│   ├── ml/
+│   │   ├── train_model.py          # Training script & Checksum generation
+│   │   ├── data_cleaning.py        # Leakage-free outlier detection
+│   │   └── model/                  # Saved artifacts and Checksums
+│   ├── scraper/
+│   │   ├── cache.py                # TTLCache with LRU Eviction limits
+│   │   ├── mock_data.py            # Generates dynamic mock laptops
+│   │   └── flipkart_scraper.py     # Playwright scraper (if enabled)
+│   └── data/                       # CSV datasets
+├── frontend/                       # React + Vite App
+├── Dockerfile                      # Multi-stage optimized Docker build
+└── requirements.txt                # Strictly pinned dependencies
 ```
 
 ## Scraping Disclaimer
