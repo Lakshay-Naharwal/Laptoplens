@@ -14,26 +14,38 @@ This implementation mirrors that interface so a swap is trivial.
 import time
 import threading
 import json
+from collections import OrderedDict
 from typing import Any, Optional
 
 DEFAULT_TTL = 3 * 60 * 60  # 3 hours — keeps IP ban risk low
+MAX_CACHE_SIZE = 1000
 
 
 class TTLCache:
     """
     A thread-safe in-memory cache where every entry has a TTL (time-to-live).
-    Expired entries are cleaned up lazily on each access.
+    Expired entries are cleaned up lazily on each access. Uses LRU eviction
+    when MAX_CACHE_SIZE is reached.
     """
 
-    def __init__(self) -> None:
-        self._store: dict[str, tuple[Any, float]] = {}  # key → (value, expires_at)
+    def __init__(self, maxsize: int = MAX_CACHE_SIZE) -> None:
+        self._store: OrderedDict[str, tuple[Any, float]] = OrderedDict()  # key → (value, expires_at)
         self._lock = threading.Lock()
+        self.maxsize = maxsize
 
     def set(self, key: str, value: Any, ttl: int = DEFAULT_TTL) -> None:
         """Store a value with a TTL in seconds."""
         expires_at = time.monotonic() + ttl
         with self._lock:
+            # If key exists, delete it so it's moved to the end when set
+            if key in self._store:
+                del self._store[key]
             self._store[key] = (value, expires_at)
+            
+            # Enforce maxsize (LRU eviction)
+            while len(self._store) > self.maxsize:
+                # popitem(last=False) removes the first (oldest) item
+                self._store.popitem(last=False)
 
     def get(self, key: str) -> Optional[Any]:
         """Return the cached value, or None if missing / expired."""
@@ -46,6 +58,9 @@ class TTLCache:
                 # Lazy expiry — remove stale entry
                 del self._store[key]
                 return None
+            
+            # Move to end to mark as recently used
+            self._store.move_to_end(key)
             return value
 
     def invalidate(self, key: str) -> None:

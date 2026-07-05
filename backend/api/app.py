@@ -49,11 +49,36 @@ cors_origins = [
 if cors_origins:
     CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 
+import hashlib
+
+def verify_checksum(filepath: Path, expected_hash: str) -> bool:
+    if not filepath.exists() or not expected_hash:
+        return False
+    hasher = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest() == expected_hash
+
 # ─── Load ML model + metadata ─────────────────────────────────────────────────
 MODEL_PATH    = BASE_DIR / "ml" / "model" / "laptop_price_model.pkl"
 METADATA_PATH = BASE_DIR / "ml" / "model" / "metadata.pkl"
+CHECKSUMS_PATH = BASE_DIR / "ml" / "model" / "checksums.json"
 
 try:
+    import json
+    if CHECKSUMS_PATH.exists():
+        with open(CHECKSUMS_PATH, "r") as f:
+            checksums = json.load(f)
+        
+        if not verify_checksum(MODEL_PATH, checksums.get("laptop_price_model.pkl")):
+            logger.error("Checksum verification failed for laptop_price_model.pkl")
+            raise ValueError("Invalid model checksum")
+        
+        if not verify_checksum(METADATA_PATH, checksums.get("metadata.pkl")):
+            logger.error("Checksum verification failed for metadata.pkl")
+            raise ValueError("Invalid metadata checksum")
+
     with open(MODEL_PATH, "rb") as f:
         model = pickle.load(f)
     with open(METADATA_PATH, "rb") as f:
@@ -437,7 +462,7 @@ def api_predict():
 
     except Exception as e:
         logger.exception("Prediction error")
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Internal server error during prediction"}), 500
 
 
 @app.route("/api/recommend", methods=["POST"])
@@ -461,7 +486,9 @@ def api_recommend():
         predicted_price  = _as_float(data.get("predicted_price"), 50000.0, 0.0)
         confidence_band  = _as_float(data.get("confidence_band"), 10000.0, 1000.0, 50000.0)
         use_case         = data.get("use_case", "")
-        use_live         = _as_bool(data.get("use_live"), False)
+        # Disable live scraping by default unless explicitly enabled on the server
+        enable_live = _as_bool(os.environ.get("ENABLE_LIVE_SCRAPING", False))
+        use_live         = enable_live and _as_bool(data.get("use_live"), False)
 
         processor_val = data.get("processor", "")
         gpu_val = data.get("GPU", "")
@@ -476,7 +503,9 @@ def api_recommend():
         }
 
         # ── Cache key ───────────────────────────────────────────────────────
-        cache_key = f"recommend::{int(predicted_price)}::{int(confidence_band)}::{use_case}"
+        import json
+        schema_version = "v1"
+        cache_key = f"recommend::{schema_version}::{int(predicted_price)}::{int(confidence_band)}::{use_case}::{user_specs['ram']}::{user_specs['gpu_type']}::{user_specs['cpu_tier']}::{user_specs['cpu_brand']}::{user_specs['brand']}::{use_live}"
         cached    = scrape_cache.get(cache_key)
         if cached:
             return jsonify({**cached, "cached": True})
@@ -545,7 +574,7 @@ def api_recommend():
 
     except Exception as e:
         logger.exception("Recommendation error")
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Internal server error during recommendation"}), 500
 
 
 @app.route("/api/laptop-image")

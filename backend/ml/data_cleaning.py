@@ -88,8 +88,7 @@ def clean_laptop_data(df):
     df_clean = df_clean[(df_clean["price"] >= 10000) & (df_clean["price"] <= 1000000)]
     return df_clean
 
-def prepare_training_data(df):
-
+def get_features_and_preprocessor(df):
     categorical_cols = ["brand", "processor", "Ram_type", "ROM_type", "GPU", "OS"]
     numerical_cols = [
         "Ram", "ROM", "display_size", "resolution_width", "resolution_height", "warranty"
@@ -111,19 +110,5 @@ def prepare_training_data(df):
             ),
         ]
     )
-
-    print("Running feature-based outlier detection...")
-    X_prep = preprocessor.fit_transform(X)
-    rf_outlier = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
-    preds = cross_val_predict(rf_outlier, X_prep, np.log1p(y), cv=3, n_jobs=-1)
-    preds_real = np.expm1(preds)
-    ratio = y / preds_real
-
-    valid_mask = (ratio < 3.0) & (ratio > 0.33)
-    X = X[valid_mask]
-    y = y[valid_mask]
-    df = df[valid_mask]
-
-    print(f"Removed {len(ratio) - valid_mask.sum()} mispriced laptops. Remaining: {len(X)}")
-
-    return X, y, preprocessor, df, categorical_cols, numerical_cols
+    
+    return X, y, preprocessor, categorical_cols, numerical_cols

@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxfixes3 libxrandr2 libgbm1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Browser install is best-effort because live scraping is optional.
+RUN playwright install chromium && playwright install-deps chromium
+
 # Hugging Face Spaces require running as a non-root user
 RUN useradd -m -u 1000 user
 USER user
@@ -33,14 +36,9 @@ WORKDIR $HOME/app
 COPY --chown=user requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Browser install is best-effort because live scraping is optional.
-RUN playwright install chromium \
-    && playwright install-deps chromium \
-    || echo "Playwright browser install failed; live scraping will be disabled"
-
 COPY --chown=user backend/ ./backend/
 COPY --chown=user --from=frontend-builder /build/frontend/dist ./frontend/dist
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "PYTHONPATH=$HOME/app gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 2 --timeout 120 --access-logfile - backend.api.app:app"]
+CMD ["sh", "-c", "PYTHONPATH=$HOME/app gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 1 --timeout 120 --access-logfile - backend.api.app:app"]

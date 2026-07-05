@@ -145,14 +145,24 @@ export default function RecommendationCard({ laptop, predictedPrice }) {
             <p className="font-display font-bold text-xl text-white">₹{fmt(price)}</p>
             <p className={`text-xs font-medium ${deltaClass}`}>{deltaText}</p>
           </div>
-          <a
-            href={(!buy_url || buy_url === "nan" || buy_url === "None" || String(buy_url).trim() === "") ? `https://www.flipkart.com/search?q=${encodeURIComponent(name)}` : buy_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-gradient w-full py-2.5 rounded-xl font-display font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-[1.02]"
-          >
-            🛒 Buy Now on Flipkart
-          </a>
+          <div className="flex gap-2">
+            <a
+              href={(!buy_url || buy_url === "nan" || buy_url === "None" || String(buy_url).trim() === "") ? `https://www.flipkart.com/search?q=${encodeURIComponent(name)}` : buy_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-gradient flex-1 py-2.5 rounded-xl font-display font-semibold text-sm flex items-center justify-center gap-1.5 transition-transform hover:scale-[1.02]"
+            >
+              🛒 Flipkart
+            </a>
+            <a
+              href={`https://www.amazon.in/s?k=${encodeURIComponent(name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-white/10 hover:bg-[#FF9900] hover:text-black flex-1 py-2.5 rounded-xl font-display font-semibold text-sm flex items-center justify-center gap-1.5 transition-all duration-300 hover:scale-[1.02]"
+            >
+              🛒 Amazon
+            </a>
+          </div>
         </div>
       </div>
     </div>
