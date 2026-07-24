@@ -26,7 +26,7 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 | 📦 **Recommendation Cards** | Matching laptops with spec match scores |
 | 🛒 **Dynamic Buying Links** | Instantly redirects to live **Flipkart** and **Amazon** search results |
 | 🏷️ **Use-Case Filter** | Gaming / Office / Design / Programming / General |
-| 📝 **Mock → Live** | Demo works offline; live Flipkart scraper is optional |
+| 📝 **Mock → Live** | Demo works offline; live Amazon/Flipkart/Smartprix scrapers are optional |
 | 🛡️ **Secure Model Loads** | Enforces strict SHA-256 checksums to ensure pickle file integrity |
 
 ## Tech Stack
@@ -34,7 +34,7 @@ An AI-powered platform that predicts a fair laptop price, finds matching real-ti
 - **Frontend**: React 18 + Vite + Tailwind CSS
 - **Backend**: Flask 3 + Gunicorn (Single Worker to protect in-memory cache)
 - **ML Model**: Voting Regressor (XGBoost + Ridge) inside a TransformedTargetRegressor
-- **Scraping**: Playwright (optional) + pre-scraped data + mock data fallback
+- **Scraping**: Playwright (Flipkart/Amazon) + Requests/BS4 (Smartprix) + pre-scraped data + mock data fallback
 - **Deployment**: Hugging Face Spaces (Docker)
 
 ## Algorithm Comparison & Pipeline Robustness
@@ -44,9 +44,9 @@ To ensure the highest accuracy for price predictions, we trained and evaluated m
 ### Phase 1: Baseline Models
 Evaluated on the raw scraped dataset (6,000+ rows).
 
-- **Random Forest**: R² = 0.665 | MAE = ₹19,397
-- **XGBoost**: R² = 0.624 | MAE = ₹21,560
-- **Neural Network (MLP)**: R² = -12.027 | MAE = ₹27,781 *(Performed worse than random baseline on this tabular dataset)*
+- **Random Forest**: R² = 0.659 | MAE = ₹19,637
+- **XGBoost**: R² = 0.641 | MAE = ₹20,790
+- **Neural Network (MLP)**: R² = -4089.639 | MAE = ₹105,849 *(Performed severely worse than a random baseline on this tabular dataset)*
 
 ### Phase 2: Post-Improvements 🏆 (Current Implementation)
 
@@ -77,6 +77,9 @@ python backend/ml/train_model.py
 # 4. Start Flask (Requires PYTHONPATH on some terminals)
 python backend/api/app.py
 # → http://localhost:5000
+
+# Optional: Run the interactive CLI pricing tool
+python backend/cli/main.py
 ```
 
 *Note: Live scraping is disabled by default to avoid accidental headless browsing restrictions. You can enable it by passing `ENABLE_LIVE_SCRAPING=true` in your `.env`.*
@@ -137,16 +140,24 @@ If the Flask backend is deployed on Hugging Face Spaces and the React frontend i
 Laptoplens/
 ├── backend/
 │   ├── api/
-│   │   └── app.py                  # Flask API & Routes
+│   │   ├── app.py                  # Flask API & Routes
+│   │   └── utils.py                # Helper utilities (e.g. GPU parsing)
+│   ├── cli/
+│   │   └── main.py                 # Interactive command-line pricing tool
 │   ├── ml/
 │   │   ├── train_model.py          # Training script & Checksum generation
 │   │   ├── data_cleaning.py        # Leakage-free outlier detection
+│   │   ├── compare_models.py       # Script to benchmark algorithms
 │   │   └── model/                  # Saved artifacts and Checksums
 │   ├── scraper/
 │   │   ├── cache.py                # TTLCache with LRU Eviction limits
 │   │   ├── mock_data.py            # Generates dynamic mock laptops
-│   │   └── flipkart_scraper.py     # Playwright scraper (if enabled)
-│   └── data/                       # CSV datasets
+│   │   ├── flipkart_scraper.py     # Base Playwright scraper
+│   │   ├── amazon_flipkart_scraper.py # Unified Playwright scraping interface
+│   │   ├── smartprix_scraper.py    # Overnight scraping using Requests/BS4
+│   │   └── image_fetcher.py        # Laptop image fetching & caching
+│   └── data/                       
+│       └── raw/                    # Contains raw dataset like data_real.csv
 ├── frontend/                       # React + Vite App
 ├── Dockerfile                      # Multi-stage optimized Docker build
 └── requirements.txt                # Strictly pinned dependencies

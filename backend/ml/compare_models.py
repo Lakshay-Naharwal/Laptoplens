@@ -32,8 +32,8 @@ df = clean_laptop_data(df)
 df = df[(df["price"] >= 10000) & (df["price"] <= 500000)]
 
 # ─── 3. Features, Preprocessing, Outliers ──────────────────────────────────────
-from data_cleaning import prepare_training_data
-X, y, preprocessor, df, categorical_cols, numerical_cols = prepare_training_data(df)
+from data_cleaning import get_features_and_preprocessor
+X, y, preprocessor, categorical_cols, numerical_cols = get_features_and_preprocessor(df)
 
 
 # ─── 4. Models to Compare ─────────────────────────────────────────────────────
